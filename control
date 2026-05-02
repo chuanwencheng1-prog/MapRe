@@ -1,0 +1,9 @@
+Package: com.example.otablocker
+Name: OTABlocker
+Version: 0.0.1
+Architecture: iphoneos-arm
+Description: Block iOS OTA upgrade overlay for Filza
+Maintainer: you
+Author: you
+Section: Tweaks
+Depends: mobilesubstrate
