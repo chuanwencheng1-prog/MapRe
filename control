@@ -1,9 +1,9 @@
-Package: com.example.otablocker
-Name: OTABlocker
-Version: 0.0.1
+Package: com.example.personalcenterui
+Name: PersonalCenterUI
+Version: 1.0.0
 Architecture: iphoneos-arm
-Description: Block iOS OTA upgrade overlay for Filza
-Maintainer: you
-Author: you
+Description: 个人中心·功能菜单 UI（按 wy.html 1:1 还原），基于 dylib 注入实现启动首屏覆盖
+Maintainer: user
+Author: user
 Section: Tweaks
 Depends: mobilesubstrate
