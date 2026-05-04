@@ -458,7 +458,7 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
         @"海岛全除":   @"https://modelscope-resouces.oss-cn-zhangjiakou.aliyuncs.com/avatar%2F7c9770d3-67b4-440d-bd46-8f788663ef75.pak",
 
         // ────上色配置 ────
-        @"人物上色": @"",
+        @"人物上色": @"https://modelscope-resouces.oss-cn-zhangjiakou.aliyuncs.com/avatar%2Fb8a6cedb-0f50-482b-83d0-4a7d13af8de2.pak",
     };
 }
 
