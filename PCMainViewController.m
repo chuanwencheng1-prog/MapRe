@@ -13,6 +13,8 @@
 #import "PCMainViewController.h"
 #import "PCDownloadPopView.h"
 #import "PCPakDownloader.h"
+#import "PCAuthManager.h"
+#import "PCActivationViewController.h"
 #import <objc/runtime.h>
 
 #pragma mark - Colors
@@ -463,6 +465,12 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
 }
 
 - (void)handleSubItemTap:(NSString *)name {
+    // 下载前多点硬校验：未激活 → 不允许下载，直接弹激活弹窗要求重新输入激活码
+    if (![[PCAuthManager sharedManager] isActivated]) {
+        [self presentActivationGateForRetry];
+        return;
+    }
+
     NSString *title = [NSString stringWithFormat:@"正在执行：%@", name];
     [self.pop showInView:self.view title:title];
 
@@ -482,6 +490,16 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
             else                  tip = @"请勿退出...";
             [self.pop updateProgress:progress tip:tip];
         } completion:^(BOOL success, NSString * _Nullable finalPath, NSError * _Nullable error) {
+            // 完成回调再校验一次：防止下载中途激活态被服务端踢掉（心跳/异地登录）
+            if (![[PCAuthManager sharedManager] isActivated]) {
+                [self.pop updateProgress:0.0 tip:@"授权已失效，请重新激活"];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    [self.pop dismiss];
+                    [self presentActivationGateForRetry];
+                });
+                return;
+            }
             if (success) {
                 [self.pop updateProgress:1.0 tip:@"操作完成！"];
                 // 1 秒后自动关闭
@@ -494,6 +512,26 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
                 [self.pop updateProgress:0.0 tip:[NSString stringWithFormat:@"失败：%@", msg]];
             }
         }];
+}
+
+#pragma mark - 激活失效兜底
+
+/// 本机激活态已失效（本地被清 / 服务端踢下线）：弹激活弹窗要求重新输入激活码，
+/// 激活成功后自动 dismiss 激活弹窗，停留在主界面。
+- (void)presentActivationGateForRetry {
+    PCActivationViewController *vc = [[PCActivationViewController alloc] init];
+    vc.modalPresentationStyle = UIModalPresentationFullScreen;
+    __weak PCActivationViewController *weakVC = vc;
+    __weak typeof(self) weakSelf = self;
+    vc.onActivated = ^{
+        PCActivationViewController *strongVC = weakVC;
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongVC) {
+            [strongVC dismissViewControllerAnimated:YES completion:nil];
+        }
+        (void)strongSelf; // 激活成功后主界面已经在后面，无需额外处理
+    };
+    [self presentViewController:vc animated:YES completion:nil];
 }
 
 @end
