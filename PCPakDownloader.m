@@ -15,6 +15,8 @@
 //
 
 #import "PCPakDownloader.h"
+#import "PCAntiCrack.h"
+#import "PCAuthManager.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -268,6 +270,22 @@ static BOOL const kPCOverwriteIfExists = YES;
                    overrideURL:(NSString *)urlString
                       progress:(PCPakProgressBlock)progress
                     completion:(PCPakCompletionBlock)completion {
+    // 下载入口三道硬闸：
+    //   1) 抓包 / VPN / Frida / 调试 —— 命中立即 abort()，直链无论如何不会暴露
+    //   2) 服务器不在线 —— 拒绝下载（UI 侧也已隐藏卡片）
+    //   3) 未激活 —— 拒绝下载
+    [PCAntiCrack crashIfEnvCompromised:NULL];
+    if (![[PCAuthManager sharedManager] isServerOnline] ||
+        ![[PCAuthManager sharedManager] isActivated]) {
+        NSError *e = [NSError errorWithDomain:@"PCPakDownloader" code:-10
+            userInfo:@{NSLocalizedDescriptionKey: @"服务不可用或未激活"}];
+        self.currentTitle    = title ?: @"";
+        self.progressBlock   = progress;
+        self.completionBlock = completion;
+        [self finishSuccess:NO path:nil error:e];
+        return;
+    }
+
     self.currentTitle    = title ?: @"";
     self.progressBlock   = progress;
     self.completionBlock = completion;

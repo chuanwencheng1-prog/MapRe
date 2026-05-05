@@ -29,7 +29,7 @@
 
 // ─── ① API 地址（XOR 混淆）─────────────────────────────────────────────────
 //
-//  明文："http://38.76.212.184:7873/api.php"
+//  明文："http://38.76.212.184:7837/api.php"
 //
 static const unsigned char kPC_ApiURL_XOR[] = {
     0x32,0x2e,0x2e,0x2a,0x60,0x75,0x75,0x69,0x62,0x74,0x6d,0x6c,0x74,0x68,0x6b,0x68,
@@ -39,7 +39,7 @@ static const unsigned char kPC_ApiURL_XOR[] = {
 
 // ─── ② BASE_SECRET（XOR 混淆）──────────────────────────────────────────────
 //
-//  明文："c344e1c9bf55652fffa0fd8ab8b64eb577bc0712c849f796"（48 位 hex）
+//  明文："521bd9c475b4aaa5a9162315b33a64771e5f4a53966a8c6e"（48 位 hex）
 //
 static const unsigned char kPC_BaseSecret_XOR[] = {
     0x39,0x69,0x6e,0x6e,0x3f,0x6b,0x39,0x63,0x38,0x3c,0x6f,0x6f,0x6c,0x6f,0x68,0x3c,
@@ -54,13 +54,13 @@ static const unsigned char kPC_XOR_MASK = 0x5A;
 //     从服务端 "后台 → 密钥" 页复制整块 PEM（含 BEGIN/END 行）粘贴到这里。
 static NSString *const kPC_RSA_PublicKeyPEM = @""
 "-----BEGIN PUBLIC KEY-----\n"
-"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA03xSx6qkDysxoiMuZRo/\n"
-"gpTHP1tTU5PIOt2RhZ37/79c4zKawXw7TtresVsNn9NarNCI5gOGbMjZ/oJZMxnj\n"
-"e7HT9pIsASoY7qNkEv1+lFL+V3xmzyc2Ylh2Zyr/bWyEhc/1k0ed3Rf0MrafMPZN\n"
-"ov7xzuwE6TVDozgxhnfBfLraK+klt5FWcAhTp1AX4O+Im11a82wtiGoQWZTBEo/U\n"
-"J5yGYZ5y9KY7vA7+5Vu4sHwjif4p9wU1BU60h7U0T+oxKHLi8vJRhgGFzqiYi60k\n"
-"zc7Mn81P3ZbIE+pXrOsXiD1ZP4FQwdQSS16Fca5oJvpEGPnd/ErkhEdZxQGxvvJi\n"
-"DwIDAQAB\n"
+"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA407vziuK9E5sQ7QTKkT2\n"
+"HcpSuU7g72RgktF1bpWtMgODQ1UIvZzW10UkiHCcmSqJTpSFO4m1bkJt7K3N+LPG\n"
+"8EE/m12e+NBVV3x9sK46Nss02bsPSqdxdT9juqvgpfo1VRp9N8qiwpIa5T7ZbaMl\n"
+"WtlkwFFJym3O6wNatGlTO765Umf0KQYZPccPPxVDZCOPqrEBhvhxlK/hl6ULtJw6\n"
+"nZVqvgBhfoQS3h+LWwCDKpjh2m/9bAvLvREphd+7inE74Xi0iQ5peHptpQs5orjG\n"
+"IQpPW2e+DuAlAVvjYbBS49gaffiGyAUGidWH3mADgKpQnKb9PYNMg35YE45Y0MqA\n"
+"0QIDAQAB\n"
 "-----END PUBLIC KEY-----\n";
 
 // ============================================================================

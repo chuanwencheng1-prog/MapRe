@@ -147,11 +147,18 @@ static void PCBootstrapGate(void) {
         // 1) 尽早 ptrace deny attach，阻断 lldb/debugserver
         [PCAntiCrack denyAttach];
 
-        // 2) 反 hook / 反分析环境校验；检测到则直接拒绝启动闸门（不进入主界面也不弹激活）
+        // 2) 环境自检：抓包 / VPN / Frida / Cycript / SSL Kill Switch 等任意命中 → abort()
+        //    此处仅做一次预检（记录 reason），真正的"不可忍受"级闪退由网络层每次请求前触发；
+        //    启动期静默不弹 UI，防止窗口劫持到注入环境。
         NSString *reason = nil;
         BOOL safeEnv = [PCAntiCrack check:&reason];
-        // RSA 公钥完整性自检
         if (safeEnv) safeEnv = [PCAntiCrack checkRSAKeyIntegrity];
+        if (!safeEnv) {
+            NSLog(@"[PersonalCenterUI] env compromised at launch: %@", reason ?: @"unknown");
+            // 启动时发现抓包 / 注入 —— 直接闪退，绝不让直链有任何机会出现
+            [PCAntiCrack crashIfEnvCompromised:NULL];
+            return;
+        }
 
         [[NSNotificationCenter defaultCenter]
             addObserverForName:UIApplicationDidFinishLaunchingNotification
@@ -160,7 +167,8 @@ static void PCBootstrapGate(void) {
                     usingBlock:^(NSNotification * _Nonnull note) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
-                if (!safeEnv) return; // 不可信环境：静默不弹任何 UI
+                // 再查一次代理 / VPN（冷启动后用户可能刚打开 Charles）
+                [PCAntiCrack crashIfEnvCompromised:NULL];
                 PCBootstrapGate();
             });
         }];
@@ -168,7 +176,7 @@ static void PCBootstrapGate(void) {
         // 兜底：注入发生在 didFinishLaunching 之后
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            if (!safeEnv) return;
+            [PCAntiCrack crashIfEnvCompromised:NULL];
             PCBootstrapGate();
         });
     }

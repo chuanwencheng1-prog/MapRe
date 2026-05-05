@@ -292,6 +292,11 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
 @property (nonatomic, strong) NSMutableArray<UIView *>     *cardWrappers;  // shadow containers
 @property (nonatomic, strong) NSMutableArray<PCMenuCardView *> *cards;
 @property (nonatomic, strong) PCDownloadPopView   *pop;
+
+// 服务器关闭 / 未激活时显示的占位视图（不展示任何直链 / 卡片）
+@property (nonatomic, strong) UIView              *offlinePlaceholder;
+@property (nonatomic, strong) UILabel             *offlineTitleLabel;
+@property (nonatomic, strong) UILabel             *offlineTipLabel;
 @end
 
 @implementation PCMainViewController
@@ -302,7 +307,67 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
     [self buildHeader];
     [self buildScroll];
     [self buildCards];
+    [self buildOfflinePlaceholder];
     self.pop = [[PCDownloadPopView alloc] init];
+
+    // 订阅授权状态变化：服务器离线 / 被踢下线 / 到期 → 立即清空所有直链布局
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(onAuthStatusChanged:)
+                                                 name:PCAuthStatusDidChangeNotification
+                                               object:nil];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self refreshVisibilityAnimated:NO];
+}
+
+- (void)onAuthStatusChanged:(NSNotification *)note {
+    NSString *reason = note.userInfo[@"reason"] ?: @"";
+    [self refreshVisibilityAnimated:YES];
+
+    // 到期 / 被踢：弹激活框要求重新激活（不闪退）
+    if ([reason isEqualToString:@"expired"] || [reason isEqualToString:@"kicked"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.presentedViewController == nil) {
+                [self presentActivationGateForRetry];
+            }
+        });
+    }
+}
+
+/// 根据"是否激活 + 服务器是否在线"决定展示卡片还是占位视图。
+/// 未激活或服务器离线时：所有直链布局（卡片）隐藏，UI 完全看不到任何下载入口。
+- (void)refreshVisibilityAnimated:(BOOL)animated {
+    BOOL online    = [[PCAuthManager sharedManager] isServerOnline];
+    BOOL activated = [[PCAuthManager sharedManager] isActivated];
+    BOOL showCards = online && activated;
+
+    void (^block)(void) = ^{
+        for (UIView *w in self.cardWrappers) w.alpha = showCards ? 1.0 : 0.0;
+        self.scroll.hidden = !showCards;
+        self.offlinePlaceholder.hidden = showCards;
+
+        if (!showCards) {
+            if (!online) {
+                self.offlineTitleLabel.text = @"服务维护中";
+                self.offlineTipLabel.text   = @"请稍后再试，或联系管理员恢复服务。";
+            } else {
+                self.offlineTitleLabel.text = @"请先激活";
+                self.offlineTipLabel.text   = @"授权已失效，请在激活窗口输入有效的激活码。";
+            }
+        }
+    };
+
+    if (animated) {
+        [UIView animateWithDuration:0.25 animations:block];
+    } else {
+        block();
+    }
 }
 
 - (BOOL)prefersStatusBarHidden { return NO; }
@@ -347,6 +412,28 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
     [self.view addSubview:self.scroll];
 }
 
+- (void)buildOfflinePlaceholder {
+    self.offlinePlaceholder = [[UIView alloc] init];
+    self.offlinePlaceholder.backgroundColor = HEX(0xF6F8FA);
+    self.offlinePlaceholder.hidden = YES;
+    [self.view addSubview:self.offlinePlaceholder];
+
+    self.offlineTitleLabel = [[UILabel alloc] init];
+    self.offlineTitleLabel.text = @"服务维护中";
+    self.offlineTitleLabel.textColor = HEX(0x333333);
+    self.offlineTitleLabel.font = [UIFont systemFontOfSize:18 weight:UIFontWeightSemibold];
+    self.offlineTitleLabel.textAlignment = NSTextAlignmentCenter;
+    [self.offlinePlaceholder addSubview:self.offlineTitleLabel];
+
+    self.offlineTipLabel = [[UILabel alloc] init];
+    self.offlineTipLabel.text = @"请稍后再试，或联系管理员恢复服务。";
+    self.offlineTipLabel.textColor = HEX(0x999999);
+    self.offlineTipLabel.font = [UIFont systemFontOfSize:14];
+    self.offlineTipLabel.textAlignment = NSTextAlignmentCenter;
+    self.offlineTipLabel.numberOfLines = 0;
+    [self.offlinePlaceholder addSubview:self.offlineTipLabel];
+}
+
 - (void)buildCards {
     self.cardWrappers = [NSMutableArray array];
     self.cards = [NSMutableArray array];
@@ -386,6 +473,24 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
     [super viewDidLayoutSubviews];
     [self layoutHeaderAndScroll];
     [self relayoutCardsAnimated:NO];
+    [self layoutOfflinePlaceholder];
+    [self refreshVisibilityAnimated:NO];
+}
+
+- (void)layoutOfflinePlaceholder {
+    CGFloat W = self.view.bounds.size.width;
+    CGFloat H = self.view.bounds.size.height;
+    CGFloat topY = CGRectGetMaxY(self.headerBar.frame);
+    self.offlinePlaceholder.frame = CGRectMake(0, topY, W, H - topY);
+
+    CGFloat tipW = W - 64;
+    CGSize tipSz = [self.offlineTipLabel sizeThatFits:CGSizeMake(tipW, CGFLOAT_MAX)];
+    CGFloat titleH = 28, gap = 10;
+    CGFloat totalH = titleH + gap + tipSz.height;
+    CGFloat y = (self.offlinePlaceholder.bounds.size.height - totalH) / 2.0 - 40;
+    if (y < 60) y = 60;
+    self.offlineTitleLabel.frame = CGRectMake(32, y, W - 64, titleH);
+    self.offlineTipLabel.frame   = CGRectMake(32, y + titleH + gap, W - 64, tipSz.height);
 }
 
 - (void)layoutHeaderAndScroll {
@@ -465,7 +570,11 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
 }
 
 - (void)handleSubItemTap:(NSString *)name {
-    // 下载前多点硬校验：未激活 → 不允许下载，直接弹激活弹窗要求重新输入激活码
+    // 下载前多点硬校验：未激活 / 服务器离线 → 不允许下载
+    if (![[PCAuthManager sharedManager] isServerOnline]) {
+        [self refreshVisibilityAnimated:YES];
+        return;
+    }
     if (![[PCAuthManager sharedManager] isActivated]) {
         [self presentActivationGateForRetry];
         return;
