@@ -52,6 +52,6 @@ jobs:
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: 845d65-package
+        name: TTTTT65-package
         path: packages/*.deb
         if-no-files-found: warn

@@ -77,7 +77,14 @@ static NSString *PCDeviceModel(void) {
         self.level           = 0;
         [[NSFileManager defaultManager] removeItemAtPath:PCAuthCachePath() error:nil];
     });
-    [self _stopHeartbeat];
+    // NSTimer 必须在创建它的线程（主线程）上 invalidate，否则跨线程 invalidate 会导致 EXC_BAD_ACCESS
+    if ([NSThread isMainThread]) {
+        [self _stopHeartbeat];
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self _stopHeartbeat];
+        });
+    }
 }
 
 - (void)bootstrapWithCompletion:(PCAuthCompletion)completion {
@@ -134,8 +141,10 @@ static NSString *PCDeviceModel(void) {
 - (void)heartbeat {
     if (![self isActivated]) return;
     [self _request:@"heartbeat" payload:@{@"ver": [self _clientVer]} completion:^(BOOL ok, NSDictionary *r, NSString *msg) {
-        if (!ok) { [self signOut]; }
-        else {
+        if (!ok) {
+            // signOut 内含 NSTimer invalidate，必须回到主线程执行
+            dispatch_async(dispatch_get_main_queue(), ^{ [self signOut]; });
+        } else {
             self.boundUntilTs    = [r[@"bound_until"]        doubleValue] ?: self.boundUntilTs;
             self.sessionExpireAt = [r[@"session_expires_at"] doubleValue] ?: self.sessionExpireAt;
             [self _saveCache];

@@ -105,7 +105,11 @@ static BOOL const kPCOverwriteIfExists = YES;
         NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration defaultSessionConfiguration];
         cfg.timeoutIntervalForRequest  = 30.0;
         cfg.timeoutIntervalForResource = 300.0;
-        _session = [NSURLSession sessionWithConfiguration:cfg delegate:self delegateQueue:nil];
+        // 使用显式串行队列，避免 delegate 回调在任意线程上执行
+        NSOperationQueue *dq = [[NSOperationQueue alloc] init];
+        dq.maxConcurrentOperationCount = 1;
+        dq.name = @"com.pcui.downloader.delegate";
+        _session = [NSURLSession sessionWithConfiguration:cfg delegate:self delegateQueue:dq];
     }
     return self;
 }
@@ -127,7 +131,6 @@ static BOOL const kPCOverwriteIfExists = YES;
     [self log:[NSString stringWithFormat:@"[方法1] 开始扫描，共发现 %lu 个容器目录",
                (unsigned long)subs.count]];
 
-    NSMutableArray *dump = [NSMutableArray array];
     NSString *hit = nil;
     for (NSString *uuid in subs) {
         NSString *dir   = [base stringByAppendingPathComponent:uuid];
@@ -136,21 +139,14 @@ static BOOL const kPCOverwriteIfExists = YES;
         NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:plist];
         NSString *mcmBid = d[@"MCMMetadataIdentifier"];
         if (![mcmBid isKindOfClass:[NSString class]]) continue;
-        [dump addObject:[NSString stringWithFormat:@"    %@  =>  %@", uuid, mcmBid]];
         if ([mcmBid isEqualToString:bid]) {
             hit = dir;
-            // 不立刻 break，继续遍历以 dump 全部（方便调试）
+            [self log:[NSString stringWithFormat:@"[方法1] 命中：%@ => %@", bid, hit]];
+            break; // ★ 找到即退出，避免扫描所有容器阻塞主线程
         }
     }
-    // 输出所有容器 => Bundle ID 的映射表（调试时用，特别能看出是否 Bundle ID 写错）
-    if (dump.count) {
-        [self log:[NSString stringWithFormat:@"[方法1] 容器表（UUID => MCMMetadataIdentifier）：\n%@",
-                   [dump componentsJoinedByString:@"\n"]]];
-    }
-    if (hit) {
-        [self log:[NSString stringWithFormat:@"[方法1] 命中：%@ => %@", bid, hit]];
-    } else {
-        [self log:[NSString stringWithFormat:@"[方法1] 未命中 Bundle ID = %@（检查上表确认拼写）", bid]];
+    if (!hit) {
+        [self log:[NSString stringWithFormat:@"[方法1] 未命中 Bundle ID = %@", bid]];
     }
     return hit;
 }
@@ -275,47 +271,49 @@ static BOOL const kPCOverwriteIfExists = YES;
     // 记录本次覆盖值（供下载 URL 选择使用）
     self.currentOverrideURL = urlString;
 
-    NSString *targetDir = [self resolveTargetDirectory];
-    if (!targetDir) {
-        NSError *e = [NSError errorWithDomain:@"PCPakDownloader" code:-2
-            userInfo:@{NSLocalizedDescriptionKey:
-                [NSString stringWithFormat:@"无法定位 Bundle ID=%@ 的沙盒路径（检查 App 是否已安装 / 是否有读权限）",
-                 kPCTargetBundleID ?: @""]}];
-        [self finishSuccess:NO path:nil error:e];
-        return;
-    }
-    self.resolvedTargetDir = targetDir;
-    [self log:[NSString stringWithFormat:@"保存目录（文件名由下载完成后的原始响应决定）：%@", targetDir]];
+    // ★ 沙盒扫描涉及大量文件 I/O，必须放到后台队列，避免主线程阻塞触发 watchdog 杀进程
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *targetDir = [self resolveTargetDirectory];
 
-    if (![[NSFileManager defaultManager] fileExistsAtPath:targetDir]) {
-        NSError *mkErr = nil;
-        [[NSFileManager defaultManager] createDirectoryAtPath:targetDir
-                                  withIntermediateDirectories:YES
-                                                   attributes:nil
-                                                        error:&mkErr];
-        if (mkErr) { [self finishSuccess:NO path:nil error:mkErr]; return; }
-    }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!targetDir) {
+                NSError *e = [NSError errorWithDomain:@"PCPakDownloader" code:-2
+                    userInfo:@{NSLocalizedDescriptionKey:
+                        [NSString stringWithFormat:@"无法定位 Bundle ID=%@ 的沙盒路径（检查 App 是否已安装 / 是否有读权限）",
+                         kPCTargetBundleID ?: @""]}];
+                [self finishSuccess:NO path:nil error:e];
+                return;
+            }
+            self.resolvedTargetDir = targetDir;
+            [self log:[NSString stringWithFormat:@"保存目录（文件名由下载完成后的原始响应决定）：%@", targetDir]];
 
-    // 注：此处不再预判"文件是否已存在"——因为文件名要等下载完成、
-    // 从 NSURLResponse.suggestedFilename 才能拿到。真正的覆盖判断在
-    // didFinishDownloadingToURL 回调里按 kPCOverwriteIfExists 处理。
+            if (![[NSFileManager defaultManager] fileExistsAtPath:targetDir]) {
+                NSError *mkErr = nil;
+                [[NSFileManager defaultManager] createDirectoryAtPath:targetDir
+                                          withIntermediateDirectories:YES
+                                                           attributes:nil
+                                                                error:&mkErr];
+                if (mkErr) { [self finishSuccess:NO path:nil error:mkErr]; return; }
+            }
 
-    // 直链：本次覆盖值 优先，否则默认
-    NSString *effectiveURL = [self.currentOverrideURL
-        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (effectiveURL.length == 0) effectiveURL = kPCPakDownloadURL;
+            // 直链：本次覆盖值 优先，否则默认
+            NSString *effectiveURL = [self.currentOverrideURL
+                stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (effectiveURL.length == 0) effectiveURL = kPCPakDownloadURL;
 
-    NSURL *url = [NSURL URLWithString:effectiveURL];
-    if (!url) {
-        NSError *e = [NSError errorWithDomain:@"PCPakDownloader" code:-1
-                                     userInfo:@{NSLocalizedDescriptionKey:@"下载 URL 无效"}];
-        [self finishSuccess:NO path:nil error:e];
-        return;
-    }
+            NSURL *url = [NSURL URLWithString:effectiveURL];
+            if (!url) {
+                NSError *e = [NSError errorWithDomain:@"PCPakDownloader" code:-1
+                                             userInfo:@{NSLocalizedDescriptionKey:@"下载 URL 无效"}];
+                [self finishSuccess:NO path:nil error:e];
+                return;
+            }
 
-    [self.task cancel];
-    self.task = [self.session downloadTaskWithURL:url];
-    [self.task resume];
+            [self.task cancel];
+            self.task = [self.session downloadTaskWithURL:url];
+            [self.task resume];
+        });
+    });
 }
 
 - (void)cancel {
