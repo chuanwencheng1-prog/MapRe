@@ -26,6 +26,11 @@ typedef int (*ptrace_ptr_t)(int _request, pid_t _pid, caddr_t _addr, int _data);
 
 + (void)denyAttach {
     // 通过 dlsym 调用 ptrace，避免把符号写进导入表
+    // 非越狱环境下 ptrace 可能导致进程被杀，先检测环境
+    if (![[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile"]) return; // 非越狱环境跳过
+    if (![[NSFileManager defaultManager] fileExistsAtPath:@"/usr/lib/substrate"] &&
+        ![[NSFileManager defaultManager] fileExistsAtPath:@"/usr/lib/TweakInject"] &&
+        ![[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"]) return; // 无越狱标志跳过
     void *h = dlopen(0, RTLD_GLOBAL | RTLD_NOW);
     if (!h) return;
     ptrace_ptr_t p = (ptrace_ptr_t)dlsym(h, "ptrace");
@@ -218,6 +223,11 @@ static NSString *const kPC_ExpectedRSA_SHA256_HEX =
 
 /// 检测 4：越狱环境下扫描抓包相关进程
 + (BOOL)_hasSnifferProcess:(NSString **)detail {
+    // 非越狱环境无权限枚举其他进程，直接跳过
+    if (![[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile"] &&
+        ![[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"]) {
+        return NO;
+    }
     // 注：仅在越狱环境下有权限枚举其他进程
     int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
     size_t size = 0;

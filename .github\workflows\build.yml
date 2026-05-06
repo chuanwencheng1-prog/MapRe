@@ -52,6 +52,6 @@ jobs:
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: 65kgel1-package
+        name: 22222d65-package
         path: packages/*.deb
         if-no-files-found: warn
