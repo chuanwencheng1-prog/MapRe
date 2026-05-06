@@ -6,7 +6,6 @@
 #import "PCAuthManager.h"
 #import "PCAuthCrypto.h"
 #import "PCAntiCrack.h"
-#import "PCPakDownloader.h"
 #import <UIKit/UIKit.h>
 #import <sys/utsname.h>
 
@@ -133,75 +132,15 @@ static NSString *PCDeviceModel(void) {
 }
 
 - (void)heartbeat {
-    if (![self isActivated]) {
-        // 本地已过期，触发清理+闪退
-        [self expireAndCleanup];
-        return;
-    }
+    if (![self isActivated]) return;
     [self _request:@"heartbeat" payload:@{@"ver": [self _clientVer]} completion:^(BOOL ok, NSDictionary *r, NSString *msg) {
-        if (!ok) {
-            [self signOut];
-            // 心跳失败（服务端踢下线/到期），执行清理+闪退
-            [self expireAndCleanup];
-        }
+        if (!ok) { [self signOut]; }
         else {
             self.boundUntilTs    = [r[@"bound_until"]        doubleValue] ?: self.boundUntilTs;
             self.sessionExpireAt = [r[@"session_expires_at"] doubleValue] ?: self.sessionExpireAt;
             [self _saveCache];
-            // 心跳成功后再检查一次是否已到期
-            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-            if (self.boundUntilTs > 0 && self.boundUntilTs < now) {
-                [self expireAndCleanup];
-            }
         }
     }];
-}
-
-#pragma mark - 到期清理 + 闪退
-
-- (void)expireAndCleanup {
-    NSLog(@"[PersonalCenterUI] 卡密到期，开始清理 pak 文件...");
-
-    // 清理目标 App 沙箱中已下载的 pak 文件
-    [self _cleanDownloadedPakFiles];
-
-    // 清除本地缓存
-    [self signOut];
-
-    // 延迟 0.5 秒后闪退（确保文件删除完成）
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        NSLog(@"[PersonalCenterUI] 清理完成，执行闪退");
-        // 使用未公开的 exit 强制结束进程
-        exit(0);
-    });
-}
-
-/// 仅清理本工具下载过的 pak 文件（通过下载记录定位，不会删除目录下其它 pak）
-- (void)_cleanDownloadedPakFiles {
-    NSArray<NSString *> *downloadedPaths = [PCPakDownloader downloadedFilePaths];
-    if (downloadedPaths.count == 0) {
-        NSLog(@"[PersonalCenterUI] 清理：无已下载记录，跳过");
-        return;
-    }
-
-    NSFileManager *fm = [NSFileManager defaultManager];
-    for (NSString *path in downloadedPaths) {
-        if ([fm fileExistsAtPath:path]) {
-            NSError *rmErr = nil;
-            [fm removeItemAtPath:path error:&rmErr];
-            if (rmErr) {
-                NSLog(@"[PersonalCenterUI] 删除失败：%@ - %@", path.lastPathComponent, rmErr.localizedDescription);
-            } else {
-                NSLog(@"[PersonalCenterUI] 已删除：%@", path.lastPathComponent);
-            }
-        } else {
-            NSLog(@"[PersonalCenterUI] 文件不存在，跳过：%@", path.lastPathComponent);
-        }
-    }
-
-    // 清除下载记录
-    [PCPakDownloader clearDownloadedFilesRecord];
 }
 
 #pragma mark - 指纹

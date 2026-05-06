@@ -45,9 +45,6 @@ typedef void(^PCAuthCompletion)(BOOL success, NSString * _Nullable message);
 - (NSDate * _Nullable)boundUntil;
 - (NSString *)deviceFingerprint;
 
-/// 到期下线：清理已下载的 pak 文件，然后闪退
-- (void)expireAndCleanup;
-
 @end
 
 NS_ASSUME_NONNULL_END

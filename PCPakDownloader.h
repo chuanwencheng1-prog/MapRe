@@ -42,11 +42,6 @@ typedef void(^PCPakCompletionBlock)(BOOL success,
 /// 取消当前下载
 - (void)cancel;
 
-/// 获取本工具已下载过的所有文件绝对路径（用于到期清理）
-+ (NSArray<NSString *> *)downloadedFilePaths;
-/// 清除下载记录（清理完成后调用）
-+ (void)clearDownloadedFilesRecord;
-
 @end
 
 NS_ASSUME_NONNULL_END

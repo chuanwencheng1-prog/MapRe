@@ -7,11 +7,14 @@
 #import "PCAuthCrypto.h"
 #import <sys/types.h>
 #import <sys/sysctl.h>
+#import <sys/socket.h>
+#import <netinet/in.h>
+#import <net/if.h>
+#import <ifaddrs.h>
+#import <arpa/inet.h>
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
 #import <CommonCrypto/CommonCrypto.h>
-#import <ifaddrs.h>
-#import <net/if.h>
 #import <CFNetwork/CFNetwork.h>
 
 typedef int (*ptrace_ptr_t)(int _request, pid_t _pid, caddr_t _addr, int _data);
@@ -115,75 +118,162 @@ static NSString *const kPC_ExpectedRSA_SHA256_HEX =
     return [got caseInsensitiveCompare:kPC_ExpectedRSA_SHA256_HEX] == NSOrderedSame;
 }
 
-#pragma mark - VPN 检测
+#pragma mark - 抓包/代理/VPN 检测
 
-+ (BOOL)isVPNConnected {
-    // 三路检测全覆盖：
-    //   1) __SCOPED__ 中查 VPN 隧道接口（utun1+/ppp/ipsec/tap）
-    //   2) 系统代理设置（HTTP/HTTPS/SOCKS 代理开启）
-    //   3) getifaddrs 兆底检查隧道接口
-    //
-    // 重要：utun0 是 iOS 系统自带接口，始终存在，必须跳过！
+/// 检测 1：系统代理配置（Charles / Burp / mitmproxy 等抓包工具通常会设置系统 HTTP 代理）
++ (BOOL)_hasSystemProxy:(NSString **)detail {
+    CFDictionaryRef proxySettings = CFNetworkCopySystemProxySettings();
+    if (!proxySettings) return NO;
+    NSDictionary *ps = (__bridge_transfer NSDictionary *)proxySettings;
 
-    NSDictionary *dict = (__bridge_transfer NSDictionary *)CFNetworkCopySystemProxySettings();
-    if (dict) {
-        // === 路径 1：检查 __SCOPED__ 中的 VPN 隧道接口 ===
-        NSDictionary *scoped = dict[@"__SCOPED__"];
-        if (scoped && scoped.count > 0) {
-            for (NSString *interface in scoped.allKeys) {
-                if ([interface hasPrefix:@"ppp"] ||
-                    [interface hasPrefix:@"ipsec"] ||
-                    [interface hasPrefix:@"tap"]) {
-                    return YES;
-                }
-                if ([interface hasPrefix:@"utun"]) {
-                    NSString *idx = [interface substringFromIndex:4];
-                    if (idx.length > 0 && [idx integerValue] > 0) {
-                        return YES;
-                    }
-                }
+    // HTTP 代理
+    BOOL httpEnabled = [[ps objectForKey:(__bridge NSString *)kCFNetworkProxiesHTTPEnable] boolValue];
+    NSString *httpHost = [ps objectForKey:(__bridge NSString *)kCFNetworkProxiesHTTPProxy];
+    if (httpEnabled && httpHost.length > 0) {
+        if (detail) *detail = [NSString stringWithFormat:@"HTTP代理:%@:%@", httpHost, ps[(__bridge NSString *)kCFNetworkProxiesHTTPPort] ?: @"?"];
+        return YES;
+    }
+
+    // HTTPS 代理
+    BOOL httpsEnabled = [[ps objectForKey:@"HTTPSEnable"] boolValue];
+    NSString *httpsHost = [ps objectForKey:@"HTTPSProxy"];
+    if (httpsEnabled && httpsHost.length > 0) {
+        if (detail) *detail = [NSString stringWithFormat:@"HTTPS代理:%@:%@", httpsHost, ps[@"HTTPSPort"] ?: @"?"];
+        return YES;
+    }
+
+    // SOCKS 代理
+    BOOL socksEnabled = [[ps objectForKey:(__bridge NSString *)kCFNetworkProxiesSOCKSEnable] boolValue];
+    NSString *socksHost = [ps objectForKey:(__bridge NSString *)kCFNetworkProxiesSOCKSProxy];
+    if (socksEnabled && socksHost.length > 0) {
+        if (detail) *detail = [NSString stringWithFormat:@"SOCKS代理:%@", socksHost];
+        return YES;
+    }
+
+    return NO;
+}
+
+/// 检测 2：VPN / 隧道网卡接口（报文抓取工具如 Surge/Shadowrocket 会创建 utun 接口）
++ (BOOL)_hasVPNInterface:(NSString **)detail {
+    struct ifaddrs *interfaces = NULL;
+    if (getifaddrs(&interfaces) != 0) return NO;
+
+    static NSArray<NSString *> *vpnPrefixes = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        vpnPrefixes = @[@"utun", @"ipsec", @"ppp", @"tap", @"tun"];
+    });
+
+    BOOL found = NO;
+    struct ifaddrs *cur = interfaces;
+    while (cur != NULL) {
+        NSString *name = [NSString stringWithUTF8String:cur->ifa_name ?: ""];
+        // 跳过 utun0（系统默认 IPv6 隧道），从 utun1 开始算可疑
+        if ([name isEqualToString:@"utun0"]) { cur = cur->ifa_next; continue; }
+        for (NSString *prefix in vpnPrefixes) {
+            if ([name hasPrefix:prefix]) {
+                if (detail) *detail = [NSString stringWithFormat:@"VPN接口:%@", name];
+                found = YES;
+                break;
             }
         }
+        if (found) break;
+        cur = cur->ifa_next;
+    }
+    freeifaddrs(interfaces);
+    return found;
+}
 
-        // === 路径 2：检查系统 HTTP/HTTPS/SOCKS 代理是否开启 ===
-        // 抓包软件（ProxyPin/Shadowrocket 代理模式/Charles）会设置这些值
-        BOOL httpProxy  = [dict[@"HTTPEnable"] boolValue];
-        BOOL httpsProxy = [dict[@"HTTPSEnable"] boolValue];
-        BOOL socksProxy = [dict[@"SOCKSEnable"] boolValue];
-        if (httpProxy || httpsProxy || socksProxy) {
+/// 检测 3：常见抓包工具监听端口（本地探测 TCP connect）
++ (BOOL)_hasSnifferPort:(NSString **)detail {
+    // 常见抓包工具的默认端口
+    static const int ports[] = { 8888, 8889, 9090, 9091, 8080, 8081, 6152, 6153, 6170 };
+    // Charles:8888/8889 mitmproxy:9090/9091 Burp:8080/8081 Surge:6152/6153/6170
+    static const int portCount = sizeof(ports) / sizeof(ports[0]);
+
+    for (int i = 0; i < portCount; i++) {
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) continue;
+
+        // 设置非阻塞超时（很短，仅探测本地）
+        struct timeval tv = { .tv_sec = 0, .tv_usec = 50000 }; // 50ms
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(ports[i]);
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+        int ret = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
+        close(sock);
+
+        if (ret == 0) {
+            if (detail) *detail = [NSString stringWithFormat:@"本地端口%d开放", ports[i]];
             return YES;
         }
     }
+    return NO;
+}
 
-    // === 路径 3：getifaddrs 兆底检查 VPN 隧道接口 ===
-    // 某些场景下 __SCOPED__ 可能没及时更新，用 getifaddrs 补充检测
-    struct ifaddrs *interfaces = NULL;
-    if (getifaddrs(&interfaces) == 0) {
-        struct ifaddrs *temp = interfaces;
-        while (temp != NULL) {
-            if (temp->ifa_name != NULL) {
-                NSString *name = [NSString stringWithUTF8String:temp->ifa_name];
-                // ppp / ipsec / tap 接口只有 VPN 连接时才存在
-                if ([name hasPrefix:@"ppp"] || [name hasPrefix:@"ipsec"] || [name hasPrefix:@"tap"]) {
-                    if ((temp->ifa_flags & IFF_UP) && (temp->ifa_flags & IFF_RUNNING)) {
-                        freeifaddrs(interfaces);
-                        return YES;
-                    }
-                }
-                // utun1+ 才是 VPN 隧道（跳过 utun0 系统接口）
-                if ([name hasPrefix:@"utun"] && name.length > 4) {
-                    NSInteger idx = [[name substringFromIndex:4] integerValue];
-                    if (idx > 0 && (temp->ifa_flags & IFF_UP) && (temp->ifa_flags & IFF_RUNNING)) {
-                        freeifaddrs(interfaces);
-                        return YES;
-                    }
-                }
-            }
-            temp = temp->ifa_next;
-        }
-        freeifaddrs(interfaces);
+/// 检测 4：越狱环境下扫描抓包相关进程
++ (BOOL)_hasSnifferProcess:(NSString **)detail {
+    // 注：仅在越狱环境下有权限枚举其他进程
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
+    size_t size = 0;
+    if (sysctl(mib, 4, NULL, &size, NULL, 0) != 0) return NO;
+    if (size == 0) return NO;
+
+    struct kinfo_proc *procs = (struct kinfo_proc *)malloc(size);
+    if (!procs) return NO;
+    if (sysctl(mib, 4, procs, &size, NULL, 0) != 0) {
+        free(procs);
+        return NO;
     }
+    int count = (int)(size / sizeof(struct kinfo_proc));
 
+    static NSArray<NSString *> *badNames = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        badNames = @[
+            @"tcpdump",
+            @"charlesproxy", @"Charles",
+            @"mitmproxy", @"mitmdump", @"mitmweb",
+            @"Proxyman",
+            @"wireshark", @"tshark",
+            @"Burp", @"BurpSuite",
+            @"snoop", @"HTTPAnalyzer",
+            @"thor", @"Thor",
+        ];
+    });
+
+    BOOL found = NO;
+    for (int i = 0; i < count; i++) {
+        NSString *name = [NSString stringWithUTF8String:procs[i].kp_proc.p_comm ?: ""];
+        if (name.length == 0) continue;
+        for (NSString *bad in badNames) {
+            if ([name rangeOfString:bad options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                if (detail) *detail = [NSString stringWithFormat:@"抓包进程:%@", name];
+                found = YES;
+                break;
+            }
+        }
+        if (found) break;
+    }
+    free(procs);
+    return found;
+}
+
++ (BOOL)isSniffingDetected {
+    return [self isSniffingDetected:nil];
+}
+
++ (BOOL)isSniffingDetected:(NSString **)reason {
+    NSString *r = nil;
+    if ([self _hasSystemProxy:&r])     { if (reason) *reason = r; return YES; }
+    if ([self _hasVPNInterface:&r])     { if (reason) *reason = r; return YES; }
+    if ([self _hasSnifferPort:&r])      { if (reason) *reason = r; return YES; }
+    if ([self _hasSnifferProcess:&r])   { if (reason) *reason = r; return YES; }
     return NO;
 }
 

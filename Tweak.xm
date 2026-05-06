@@ -161,32 +161,14 @@ static void PCBootstrapGate(void) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
                 if (!safeEnv) return; // 不可信环境：静默不弹任何 UI
-
-                // 3) VPN/代理 检测：发现 VPN 连接立即闪退，防止直链被抓包
-                if ([PCAntiCrack isVPNConnected]) {
-                    NSLog(@"[PersonalCenterUI] 检测到 VPN/代理连接，执行闪退");
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
-                                   dispatch_get_main_queue(), ^{ exit(0); });
-                    return;
-                }
-
                 PCBootstrapGate();
             });
         }];
 
-        // 兆底：注入发生在 didFinishLaunching 之后
+        // 兜底：注入发生在 didFinishLaunching 之后
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             if (!safeEnv) return;
-
-            // 兆底也检测 VPN
-            if ([PCAntiCrack isVPNConnected]) {
-                NSLog(@"[PersonalCenterUI] [兆底] 检测到 VPN/代理连接，执行闪退");
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
-                               dispatch_get_main_queue(), ^{ exit(0); });
-                return;
-            }
-
             PCBootstrapGate();
         });
     }
