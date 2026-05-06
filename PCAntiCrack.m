@@ -160,8 +160,10 @@ typedef int (*ptrace_ptr_t)(int _request, pid_t _pid, caddr_t _addr, int _data);
     if (httpsEnabled && httpsHost.length > 0) return YES;
 
     // 检查 SOCKS 代理（部分抓包工具使用）
-    BOOL socksEnabled = [proxy[(__bridge NSString *)kCFNetworkProxiesSOCKSEnable] boolValue];
-    NSString *socksHost = proxy[(__bridge NSString *)kCFNetworkProxiesSOCKSProxy];
+    // 注：kCFNetworkProxiesSOCKSEnable/kCFNetworkProxiesSOCKSProxy 在 iOS 上不可用，
+    //     使用字符串字面量直接读取字典。
+    BOOL socksEnabled = [proxy[@"SOCKSEnable"] boolValue];
+    NSString *socksHost = proxy[@"SOCKSProxy"];
     if (socksEnabled && socksHost.length > 0) return YES;
 
     return NO;
