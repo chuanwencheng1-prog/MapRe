@@ -142,9 +142,9 @@ static NSString *const kPC_ExpectedRSA_SHA256_HEX =
         return YES;
     }
 
-    // SOCKS 代理
-    BOOL socksEnabled = [[ps objectForKey:(__bridge NSString *)kCFNetworkProxiesSOCKSEnable] boolValue];
-    NSString *socksHost = [ps objectForKey:(__bridge NSString *)kCFNetworkProxiesSOCKSProxy];
+    // SOCKS 代理（iOS 上这些 key 字符串虽未导出符号，但字典中仍可能存在）
+    BOOL socksEnabled = [[ps objectForKey:@"SOCKSEnable"] boolValue];
+    NSString *socksHost = [ps objectForKey:@"SOCKSProxy"];
     if (socksEnabled && socksHost.length > 0) {
         if (detail) *detail = [NSString stringWithFormat:@"SOCKS代理:%@", socksHost];
         return YES;
