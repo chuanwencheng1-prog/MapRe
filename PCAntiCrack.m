@@ -12,6 +12,7 @@
 #import <CommonCrypto/CommonCrypto.h>
 #import <ifaddrs.h>
 #import <net/if.h>
+#import <CFNetwork/CFNetwork.h>
 
 typedef int (*ptrace_ptr_t)(int _request, pid_t _pid, caddr_t _addr, int _data);
 #ifndef PT_DENY_ATTACH
@@ -117,29 +118,37 @@ static NSString *const kPC_ExpectedRSA_SHA256_HEX =
 #pragma mark - VPN 检测
 
 + (BOOL)isVPNConnected {
-    // 仅通过网络接口检测：只有 VPN 真正连接时，utun/ppp/ipsec 接口才会处于 UP+RUNNING 状态。
-    // 安装了抓包软件但未开启 VPN 时，这些接口不会出现或不会处于活跃状态，不会误判。
-    struct ifaddrs *interfaces = NULL;
-    BOOL vpnFound = NO;
-    if (getifaddrs(&interfaces) == 0) {
-        struct ifaddrs *temp = interfaces;
-        while (temp != NULL) {
-            if (temp->ifa_name != NULL) {
-                NSString *name = [NSString stringWithUTF8String:temp->ifa_name];
-                // utun = iOS VPN 隧道接口, ppp = PPTP/L2TP, ipsec = IPSec VPN
-                if ([name hasPrefix:@"utun"] || [name hasPrefix:@"ppp"] || [name hasPrefix:@"ipsec"]) {
-                    // 必须同时满足 UP（接口已启用）和 RUNNING（链路已建立）才认定 VPN 正在连接中
-                    if ((temp->ifa_flags & IFF_UP) && (temp->ifa_flags & IFF_RUNNING)) {
-                        vpnFound = YES;
-                        break;
-                    }
-                }
-            }
-            temp = temp->ifa_next;
+    // 使用 CFNetworkCopySystemProxySettings 检测真实 VPN 连接状态。
+    // __SCOPED__ 字典仅包含当前正在承载流量的活跃接口，
+    // VPN 未连接时 VPN 隧道接口不会出现在其中，
+    // 仅安装了抓包软件但未开启不会触发。
+    //
+    // 重要：utun0 是 iOS 系统自带接口（始终存在），必须跳过！
+    // 只有 utun1/utun2/... 才是 VPN 应用创建的隧道接口。
+
+    NSDictionary *dict = (__bridge_transfer NSDictionary *)CFNetworkCopySystemProxySettings();
+    if (!dict) return NO;
+
+    NSDictionary *scoped = dict[@"__SCOPED__"];
+    if (!scoped || scoped.count == 0) return NO;
+
+    for (NSString *interface in scoped.allKeys) {
+        // ppp / ipsec / tap 是明确的 VPN 接口，只有连接时才存在
+        if ([interface hasPrefix:@"ppp"] ||
+            [interface hasPrefix:@"ipsec"] ||
+            [interface hasPrefix:@"tap"]) {
+            return YES;
         }
-        freeifaddrs(interfaces);
+        // utun0 是系统接口（始终存在），必须跳过！
+        // utun1 / utun2 / ... 才是 VPN 应用创建的隧道
+        if ([interface hasPrefix:@"utun"]) {
+            NSString *idx = [interface substringFromIndex:4];
+            if (idx.length > 0 && [idx integerValue] > 0) {
+                return YES;
+            }
+        }
     }
-    return vpnFound;
+    return NO;
 }
 
 @end
