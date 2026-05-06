@@ -42,6 +42,17 @@ typedef void(^PCPakCompletionBlock)(BOOL success,
 /// 取消当前下载
 - (void)cancel;
 
+/// 清理目标目录下已下载的 pak 文件（不清其它文件）：
+///   用于：激活码到期 / 被管理员禁用 / 被踢下线 / 应用退入后台自清。
+///   同时会取消当前进行中的下载任务。
+///   reason 仅用于日志标记（如 @"expired" / @"background"）。
+///   completion 不为 nil 时：成功/失败 与 被清理的文件数添头回调。
++ (void)cleanupDownloadedPakFilesReason:(nullable NSString *)reason
+                            completion:(nullable void(^)(BOOL success, NSUInteger removed))completion;
+
+/// 同上同步版：返回被清理的文件个数（主要供程序退出前调用）。
++ (NSUInteger)cleanupDownloadedPakFilesSyncReason:(nullable NSString *)reason;
+
 @end
 
 NS_ASSUME_NONNULL_END

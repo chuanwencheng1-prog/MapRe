@@ -6,11 +6,9 @@
 #import "PCAuthManager.h"
 #import "PCAuthCrypto.h"
 #import "PCAntiCrack.h"
-#import "PCDeviceID.h"
+#import "PCPakDownloader.h"
 #import <UIKit/UIKit.h>
 #import <sys/utsname.h>
-
-NSString *const PCAuthStatusDidChangeNotification = @"PCAuthStatusDidChangeNotification";
 
 // 本地缓存文件：放 /var/mobile/Library/Preferences/.pcui_auth.dat
 static NSString *PCAuthCachePath(void) {
@@ -26,21 +24,15 @@ static NSString *PCDeviceModel(void) {
     return [NSString stringWithUTF8String:u.machine] ?: @"unknown";
 }
 
-// 连续心跳失败达到该值后，服务器视为离线 —— 触发 UI 清空所有直链布局
-static const NSInteger kPCServerOfflineThreshold = 3;
-
 @interface PCAuthManager ()
-@property (nonatomic, copy)   NSString *fingerprint;       // 现在 == UDID
+@property (nonatomic, copy)   NSString *fingerprint;       // 设备指纹
 @property (nonatomic, copy)   NSString *sessionKey;        // 服务器下发
 @property (nonatomic, assign) NSTimeInterval sessionExpireAt;
 @property (nonatomic, assign) NSTimeInterval boundUntilTs;
 @property (nonatomic, assign) NSInteger level;
 @property (nonatomic, strong) NSTimer *heartbeatTimer;
 @property (nonatomic, strong) dispatch_queue_t q;
-
-// 服务器在线状态
-@property (atomic, assign)    BOOL      serverOnline;
-@property (atomic, assign)    NSInteger consecutiveFailures;
+@property (nonatomic, assign) BOOL expireCleanupFired; // 本次会话过期只清一次，避免刷屏
 @end
 
 @implementation PCAuthManager
@@ -55,43 +47,55 @@ static const NSInteger kPCServerOfflineThreshold = 3;
 - (instancetype)init {
     if ((self = [super init])) {
         _q = dispatch_queue_create("com.pcui.auth.q", DISPATCH_QUEUE_SERIAL);
-        _fingerprint = [[PCDeviceID udid] copy];    // ← 直接使用真 UDID
-        _serverOnline = NO;                         // 首次启动保守：未探测前视为离线
-        _consecutiveFailures = 0;
+        _fingerprint = [self _computeFingerprint];
         [self _loadCache];
+        // 生命周期观察者：退后台/即将终止 → 一律清理已下载 pak
+        NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+        [nc addObserver:self selector:@selector(_onAppDidEnterBackground)
+                   name:UIApplicationDidEnterBackgroundNotification object:nil];
+        [nc addObserver:self selector:@selector(_onAppWillTerminate)
+                   name:UIApplicationWillTerminateNotification object:nil];
+        [nc addObserver:self selector:@selector(_onAppWillResignActive)
+                   name:UIApplicationWillResignActiveNotification object:nil];
+        [nc addObserver:self selector:@selector(_onAppDidBecomeActive)
+                   name:UIApplicationDidBecomeActiveNotification object:nil];
     }
     return self;
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [self _stopHeartbeat];
 }
 
 #pragma mark - Public
 
 - (NSString *)deviceFingerprint { return _fingerprint ?: @""; }
-- (NSString *)deviceUDID        { return [PCDeviceID udid]; }
-- (NSString *)udidSource        { return [PCDeviceID source]; }
-
 - (NSDate *)boundUntil {
     return _boundUntilTs > 0 ? [NSDate dateWithTimeIntervalSince1970:_boundUntilTs] : nil;
 }
-
-- (BOOL)isServerOnline { return _serverOnline; }
 
 - (BOOL)isActivated {
     // 多重校验：任何一项不满足都视为未激活
     if (_fingerprint.length == 0)                    return NO;
     if (_sessionKey.length   == 0)                   return NO;
-    if (_boundUntilTs < 0)                           return NO;
+    if (_boundUntilTs <= 0)                          return NO;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    // boundUntilTs == 0 表示"永久"（服务端 duration_seconds = -1 下发），不做过期判断
-    if (_boundUntilTs > 0 && _boundUntilTs < now)    return NO;
-    if (_sessionExpireAt > 0 && _sessionExpireAt < now - 60) return NO; // 会话过期也视为失效
+    if (_boundUntilTs   < now) {
+        // 本地检测到已过期 → 触发一次性强清理（登出 + 清 pak）
+        if (!_expireCleanupFired) {
+            _expireCleanupFired = YES;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self forceInvalidateWithReason:@"local_expired"];
+            });
+        }
+        return NO;
+    }
+    if (_sessionExpireAt < now - 60)                 return NO; // 会话过期也视为失效
     return YES;
 }
 
 - (void)signOut {
-    [self _signOutWithReason:@"kicked"];
-}
-
-- (void)_signOutWithReason:(NSString *)reason {
     dispatch_sync(_q, ^{
         self.sessionKey      = @"";
         self.sessionExpireAt = 0;
@@ -100,77 +104,56 @@ static const NSInteger kPCServerOfflineThreshold = 3;
         [[NSFileManager defaultManager] removeItemAtPath:PCAuthCachePath() error:nil];
     });
     [self _stopHeartbeat];
-    [self _postStatusChange:reason ?: @"kicked"];
 }
 
-- (void)_postStatusChange:(NSString *)reason {
-    NSDictionary *info = @{
-        @"activated": @([self isActivated]),
-        @"online":    @(self.serverOnline),
-        @"reason":    reason ?: @"",
-    };
+- (void)forceInvalidateWithReason:(NSString *)reason {
+    NSLog(@"[PCAuth] forceInvalidate reason=%@", reason ?: @"unknown");
+    // 1) 清 pak（异步，不阻塞主线程）
+    [PCPakDownloader cleanupDownloadedPakFilesReason:(reason ?: @"invalidate") completion:nil];
+    // 2) 登出（清缓存 + 停心跳）
+    [self signOut];
+    // 3) 通知外层踢 UI 回激活页
     dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter]
-            postNotificationName:PCAuthStatusDidChangeNotification
-                          object:self
-                        userInfo:info];
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"PCAuthDidInvalidate"
+                                                            object:self
+                                                          userInfo:@{ @"reason": reason ?: @"" }];
     });
 }
 
-- (void)_setServerOnline:(BOOL)online {
-    if (self.serverOnline == online) return;
-    self.serverOnline = online;
-    [self _postStatusChange:online ? @"online" : @"offline"];
-}
-
-#pragma mark - bootstrap / activate / heartbeat
-
 - (void)bootstrapWithCompletion:(PCAuthCompletion)completion {
-    // 环境检测：抓包/VPN/调试/注入 → 直接闪退，不再继续
-    [PCAntiCrack crashIfEnvCompromised:NULL];
-
-    // 先走一次 ping 探活（无需 session，用 base_secret）。
-    //   · 成功 → serverOnline = YES
-    //   · 失败 → serverOnline = NO（UI 将隐藏所有直链布局）
-    [self _pingWithCompletion:^(BOOL pingOk) {
-        [self _setServerOnline:pingOk];
-
-        if (!pingOk) {
-            // 服务器关闭：界面保持空白，无需本地激活态
-            if (completion) completion(NO, @"服务器暂不可用");
-            return;
+    NSString *reason = nil;
+    if (![PCAntiCrack check:&reason]) {
+        if (completion) completion(NO, [NSString stringWithFormat:@"环境异常：%@", reason ?: @"unknown"]);
+        return;
+    }
+    if (![self isActivated]) {
+        if (completion) completion(NO, @"未激活，请输入激活码");
+        return;
+    }
+    // 有本地态 → 尝试心跳
+    [self _request:@"heartbeat" payload:@{@"ver": [self _clientVer]} completion:^(BOOL ok, NSDictionary *resp, NSString *msg) {
+        if (ok) {
+            [self _startHeartbeat];
+            if (completion) completion(YES, @"已激活");
+        } else {
+            // 心跳失败视为掉线，要求用户重新激活
+            [self signOut];
+            if (completion) completion(NO, msg ?: @"会话失效，请重新激活");
         }
-
-        if (![self isActivated]) {
-            if (completion) completion(NO, @"未激活，请输入激活码");
-            return;
-        }
-
-        // 已激活 → 尝试心跳
-        [self _request:@"heartbeat" payload:@{@"ver": [self _clientVer]} completion:^(BOOL ok, NSDictionary *resp, NSString *msg) {
-            if (ok) {
-                [self _startHeartbeat];
-                if (completion) completion(YES, @"已激活");
-            } else {
-                // 心跳失败视为掉线，优雅下线（不 abort）
-                [self _signOutWithReason:@"expired"];
-                if (completion) completion(NO, msg ?: @"会话失效，请重新激活");
-            }
-        }];
     }];
 }
 
 - (void)activateWithCode:(NSString *)code completion:(PCAuthCompletion)completion {
-    // 激活行为也必须在洁净环境下进行
-    [PCAntiCrack crashIfEnvCompromised:NULL];
-
+    NSString *reason = nil;
+    if (![PCAntiCrack check:&reason]) {
+        if (completion) completion(NO, [NSString stringWithFormat:@"环境异常：%@", reason ?: @"unknown"]);
+        return;
+    }
     code = [[code stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] uppercaseString];
     if (code.length < 8) { if (completion) completion(NO, @"激活码格式不正确"); return; }
 
     NSDictionary *payload = @{
         @"code":   code,
-        @"udid":   [PCDeviceID udid] ?: @"",                                 // ← 明确提交真 UDID
-        @"src":    [PCDeviceID source] ?: @"",
         @"model":  PCDeviceModel(),
         @"system": [[UIDevice currentDevice] systemVersion] ?: @"",
         @"bundle": [[NSBundle mainBundle] bundleIdentifier] ?: @"",
@@ -184,8 +167,6 @@ static const NSInteger kPCServerOfflineThreshold = 3;
         self.level           = [resp[@"level"]              integerValue];
         [self _saveCache];
         [self _startHeartbeat];
-        [self _setServerOnline:YES];
-        [self _postStatusChange:@"activated"];
         if (completion) completion(YES, [resp[@"msg"] description] ?: @"激活成功");
     }];
 }
@@ -194,73 +175,66 @@ static const NSInteger kPCServerOfflineThreshold = 3;
     if (![self isActivated]) return;
     [self _request:@"heartbeat" payload:@{@"ver": [self _clientVer]} completion:^(BOOL ok, NSDictionary *r, NSString *msg) {
         if (!ok) {
-            // 到期或被踢 → signOut 发通知（不闪退）
-            [self _signOutWithReason:@"expired"];
+            // 心跳失败（可能是服务端踢下线 / 卡密到期）→ 强制清理
+            [self forceInvalidateWithReason:@"heartbeat_failed"];
         } else {
             self.boundUntilTs    = [r[@"bound_until"]        doubleValue] ?: self.boundUntilTs;
             self.sessionExpireAt = [r[@"session_expires_at"] doubleValue] ?: self.sessionExpireAt;
+            // 服务端可能在成功响应中下发 cleanup 指示（例如强制刷新pak）
+            if ([[r objectForKey:@"cleanup"] intValue] == 1) {
+                [PCPakDownloader cleanupDownloadedPakFilesReason:@"server_hint" completion:nil];
+            }
             [self _saveCache];
         }
     }];
 }
 
-#pragma mark - ping 探活（不走 session，用 base_secret）
+#pragma mark - 生命周期
 
-- (void)_pingWithCompletion:(void(^)(BOOL ok))cb {
-    dispatch_async(_q, ^{
-        NSURL *url = [NSURL URLWithString:[PCAuthCrypto apiURL]];
-        if (!url) { if (cb) cb(NO); return; }
-
-        NSString *shared = [PCAuthCrypto baseSecret];
-        NSDictionary *payload = @{ @"ver": [self _clientVer] };
-        NSData *pt = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
-        NSData *iv = [PCAuthCrypto randomBytes:16];
-        NSData *ct = [PCAuthCrypto aesEncrypt:pt keyMaterial:shared iv:iv];
-        if (!ct) { if (cb) cb(NO); return; }
-        NSString *bodyB = [PCAuthCrypto b64uEncode:ct];
-        NSString *ivB   = [PCAuthCrypto b64uEncode:iv];
-
-        long long ts = (long long)[[NSDate date] timeIntervalSince1970];
-        NSString *nonce = [PCAuthCrypto hexString:[PCAuthCrypto randomBytes:16]];
-        NSString *fp    = self.fingerprint ?: @"";
-
-        NSString *canonical = [NSString stringWithFormat:@"%d|%@|%lld|%@|%@|%@|%@",
-                               1, @"ping", ts, nonce, fp, bodyB, ivB];
-        NSData *sig = [PCAuthCrypto hmacSHA256:[canonical dataUsingEncoding:NSUTF8StringEncoding]
-                                           key:[shared dataUsingEncoding:NSUTF8StringEncoding]];
-
-        NSDictionary *req = @{
-            @"v":     @(1),
-            @"act":   @"ping",
-            @"ts":    @(ts),
-            @"nonce": nonce,
-            @"fp":    fp,
-            @"body":  bodyB,
-            @"iv":    ivB,
-            @"sig":   [PCAuthCrypto hexString:sig],
-        };
-        NSData *reqData = [NSJSONSerialization dataWithJSONObject:req options:0 error:nil];
-
-        NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:url];
-        r.HTTPMethod = @"POST";
-        r.timeoutInterval = 8.0;
-        [r setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-        [r setValue:@"PCUIAuth/1.0"     forHTTPHeaderField:@"User-Agent"];
-        r.HTTPBody = reqData;
-
-        NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-        cfg.TLSMinimumSupportedProtocolVersion = tls_protocol_version_TLSv12;
-        NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
-        [[session dataTaskWithRequest:r completionHandler:^(NSData *d, NSURLResponse *resp, NSError *err) {
-            if (err || d.length == 0) { if (cb) cb(NO); return; }
-            NSDictionary *j = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
-            if (![j isKindOfClass:[NSDictionary class]]) { if (cb) cb(NO); return; }
-            if (cb) cb([j[@"ok"] boolValue]);
-        }] resume];
-    });
+- (void)_onAppDidEnterBackground {
+    // 进入后台立即清理 pak（异步即可）
+    [PCPakDownloader cleanupDownloadedPakFilesReason:@"app_background" completion:nil];
 }
 
-#pragma mark - 客户端版本
+- (void)_onAppWillTerminate {
+    // 即将终止：必须同步清理，否则进程死掉任务未执行
+    (void)[PCPakDownloader cleanupDownloadedPakFilesSyncReason:@"app_terminate"];
+}
+
+- (void)_onAppWillResignActive {
+    // 失活（如下拉控制中心、来电）：轻量二次校验抓包，命中立即闪退
+    NSString *r = nil;
+    if ([PCAntiCrack isProxyOrCapturingDetected:&r]) {
+        [PCAntiCrack selfDestructReason:r ?: @"proxy_on_resign"];
+    }
+}
+
+- (void)_onAppDidBecomeActive {
+    // 回到前台：重新校验环境 + 有效期
+    NSString *r = nil;
+    if ([PCAntiCrack isProxyOrCapturingDetected:&r]) {
+        [PCAntiCrack selfDestructReason:r ?: @"proxy_on_active"];
+    }
+    if (![self isActivated]) {
+        // isActivated 内部会自动触发 forceInvalidate（如果是本地过期）
+        return;
+    }
+    // 主动心跳一次，快速感知远端踢下线
+    [self heartbeat];
+}
+
+#pragma mark - 指纹
+
+- (NSString *)_computeFingerprint {
+    NSString *idfv   = [[UIDevice currentDevice].identifierForVendor UUIDString] ?: @"";
+    NSString *bundle = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
+    NSString *model  = PCDeviceModel();
+    NSString *os     = [[UIDevice currentDevice].systemVersion componentsSeparatedByString:@"."].firstObject ?: @"";
+    // 混入一个编译期 salt（与服务端无关，仅稳定性用）
+    NSString *composite = [NSString stringWithFormat:@"%@|%@|%@|%@|pcui", idfv, bundle, model, os];
+    NSData *h = [PCAuthCrypto sha256:[composite dataUsingEncoding:NSUTF8StringEncoding]];
+    return [PCAuthCrypto hexString:h];
+}
 
 - (NSString *)_clientVer { return @"1.0.0"; }
 
@@ -282,11 +256,11 @@ static const NSInteger kPCServerOfflineThreshold = 3;
     _heartbeatTimer = nil;
 }
 
-#pragma mark - 本地缓存（AES 加密，UDID 派生密钥）
+#pragma mark - 本地缓存（AES 加密，设备指纹派生密钥）
 
 - (NSString *)_cacheKeyMaterial {
-    // 真 UDID + 编译期常量混合，离开本机无法解密
-    return [NSString stringWithFormat:@"pcui-auth-v2::%@", self.fingerprint ?: @""];
+    // 设备指纹 + 编译期常量混合，离开本机无法解密
+    return [NSString stringWithFormat:@"pcui-auth-v1::%@", self.fingerprint];
 }
 
 - (void)_loadCache {
@@ -308,7 +282,7 @@ static const NSInteger kPCServerOfflineThreshold = 3;
     NSDictionary *d = [NSJSONSerialization JSONObjectWithData:pt options:0 error:nil];
     if (![d isKindOfClass:[NSDictionary class]]) return;
 
-    // UDID 复核
+    // 指纹复核
     if (![[d objectForKey:@"fp"] isEqualToString:self.fingerprint]) return;
     self.sessionKey      = [d[@"sk"] description] ?: @"";
     self.sessionExpireAt = [d[@"se"] doubleValue];
@@ -342,9 +316,6 @@ static const NSInteger kPCServerOfflineThreshold = 3;
 #pragma mark - 网络层
 
 - (void)_request:(NSString *)act payload:(NSDictionary *)payload completion:(void(^)(BOOL ok, NSDictionary *resp, NSString *msg))completion {
-    // 每次网络请求前再查一次抓包/VPN，抓到直接 abort —— 抓不到我们的直链
-    [PCAntiCrack crashIfEnvCompromised:NULL];
-
     dispatch_async(_q, ^{
         NSURL *url = [NSURL URLWithString:[PCAuthCrypto apiURL]];
         if (!url) { if (completion) completion(NO, nil, @"API 地址未配置"); return; }
@@ -394,24 +365,15 @@ static const NSInteger kPCServerOfflineThreshold = 3;
         cfg.TLSMinimumSupportedProtocolVersion = tls_protocol_version_TLSv12;
         NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
         [[session dataTaskWithRequest:r completionHandler:^(NSData *d, NSURLResponse *resp, NSError *err) {
-            if (err) {
-                // 网络层错误 → 累计失败 → 达到阈值判定服务器离线
-                [self _onNetworkFailure];
-                if (completion) completion(NO, nil, err.localizedDescription);
-                return;
-            }
+            if (err) { if (completion) completion(NO, nil, err.localizedDescription); return; }
             NSDictionary *j = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
-            if (![j isKindOfClass:[NSDictionary class]]) {
-                [self _onNetworkFailure];
-                if (completion) completion(NO, nil, @"响应解析失败");
-                return;
-            }
-            // 收到合法响应就视为"在线"
-            self.consecutiveFailures = 0;
-            [self _setServerOnline:YES];
-
+            if (![j isKindOfClass:[NSDictionary class]]) { if (completion) completion(NO, nil, @"响应解析失败"); return; }
             if (![j[@"ok"] boolValue]) {
                 NSString *m = [j[@"msg"] description] ?: @"验证失败";
+                // 服务端在失败响应明文层下发 cleanup=1（卡密到期/被禁用/换机）→ 立即清 pak
+                if ([[j objectForKey:@"cleanup"] intValue] == 1) {
+                    [PCPakDownloader cleanupDownloadedPakFilesReason:@"server_reject" completion:nil];
+                }
                 if (completion) completion(NO, nil, m);
                 return;
             }
@@ -421,7 +383,7 @@ static const NSInteger kPCServerOfflineThreshold = 3;
             if (bodyRespB.length == 0 || ivRespB.length == 0) {
                 if (completion) completion(NO, nil, @"响应字段缺失"); return;
             }
-            // RSA 验签
+            // RSA 验签（公钥在本地，服务器无法伪造签名 → 强防 MITM）
             NSString *toSign = [NSString stringWithFormat:@"%@|%@", bodyRespB, ivRespB];
             NSData *hash    = [PCAuthCrypto sha256:[toSign dataUsingEncoding:NSUTF8StringEncoding]];
             NSData *sigData = [PCAuthCrypto b64uDecode:sigRespB];
@@ -432,23 +394,25 @@ static const NSInteger kPCServerOfflineThreshold = 3;
             }
             if (!sigOk) { if (completion) completion(NO, nil, @"响应签名校验失败"); return; }
 
+            // 解密
             NSData *ctR = [PCAuthCrypto b64uDecode:bodyRespB];
             NSData *ivR = [PCAuthCrypto b64uDecode:ivRespB];
-            NSData *pt2  = [PCAuthCrypto aesDecrypt:ctR keyMaterial:shared iv:ivR];
-            if (!pt2) { if (completion) completion(NO, nil, @"响应解密失败"); return; }
-            NSDictionary *inner = [NSJSONSerialization JSONObjectWithData:pt2 options:0 error:nil];
+            NSData *pt  = [PCAuthCrypto aesDecrypt:ctR keyMaterial:shared iv:ivR];
+            if (!pt) { if (completion) completion(NO, nil, @"响应解密失败"); return; }
+            NSDictionary *inner = [NSJSONSerialization JSONObjectWithData:pt options:0 error:nil];
             if (![inner isKindOfClass:[NSDictionary class]]) { if (completion) completion(NO, nil, @"响应解析失败"); return; }
+            // 一机一码强化：服务端在解密后的 inner 中回传 device_fp（HMAC(fp, shared)）
+            // 这里只需比对服务端回传的 fp 与本地一致（服务端也会在 activate 时落库）
+            NSString *srvFp = [inner[@"device_fp"] description];
+            if (srvFp.length > 0 && ![srvFp isEqualToString:self.fingerprint]) {
+                // 指纹不一致 → 换机/克隆，立即强制清理
+                [self forceInvalidateWithReason:@"fingerprint_mismatch"];
+                if (completion) completion(NO, nil, @"设备指纹不匹配");
+                return;
+            }
             if (completion) completion(YES, inner, [inner[@"msg"] description] ?: @"ok");
         }] resume];
     });
-}
-
-- (void)_onNetworkFailure {
-    NSInteger n = self.consecutiveFailures + 1;
-    self.consecutiveFailures = n;
-    if (n >= kPCServerOfflineThreshold) {
-        [self _setServerOnline:NO];
-    }
 }
 
 @end

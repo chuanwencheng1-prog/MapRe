@@ -13,9 +13,8 @@ PersonalCenterUI_FILES      = Tweak.xm \
                               PCAuthCrypto.m \
                               PCAntiCrack.m \
                               PCAuthManager.m \
-                              PCDeviceID.m \
                               PCActivationViewController.m
 PersonalCenterUI_CFLAGS     = -fobjc-arc -Wno-deprecated-declarations
-PersonalCenterUI_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore Security SystemConfiguration CFNetwork
+PersonalCenterUI_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore Security CFNetwork
 
 include $(THEOS_MAKE_PATH)/tweak.mk

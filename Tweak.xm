@@ -23,6 +23,46 @@
 #import "PCAuthManager.h"
 #import "PCAntiCrack.h"
 #import "PCActivationViewController.h"
+#import "PCPakDownloader.h"
+
+#pragma mark - 周期巡检定时器
+
+static dispatch_source_t g_pc_guard_timer = NULL;
+
+static void PCStartGuardTimer(void) {
+    if (g_pc_guard_timer) return;
+    dispatch_queue_t q = dispatch_queue_create("com.pcui.guard", DISPATCH_QUEUE_SERIAL);
+    g_pc_guard_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
+    // 首次 5s 后，之后每 10s 巡检一次
+    dispatch_source_set_timer(g_pc_guard_timer,
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)),
+                              10ull * NSEC_PER_SEC,
+                              1ull * NSEC_PER_SEC);
+    dispatch_source_set_event_handler(g_pc_guard_timer, ^{
+        @autoreleasepool {
+            // 1) 反调试/反注入检测
+            NSString *r = nil;
+            if (![PCAntiCrack check:&r]) {
+                [PCAntiCrack selfDestructReason:r ?: @"anticrack_fail"];
+                return;
+            }
+            // 2) 抓包/系统代理检测
+            NSString *pr = nil;
+            if ([PCAntiCrack isProxyOrCapturingDetected:&pr]) {
+                [PCAntiCrack selfDestructReason:pr ?: @"proxy_detected"];
+                return;
+            }
+            // 3) RSA 公钥完整性复核（防止运行时被改后重签）
+            if (![PCAntiCrack checkRSAKeyIntegrity]) {
+                [PCAntiCrack selfDestructReason:@"rsa_tampered"];
+                return;
+            }
+            // 4) 活跃态下检测激活过期（恶意修改本地时间后也会在下次心跳时带回服务端时间）
+            (void)[[PCAuthManager sharedManager] isActivated];
+        }
+    });
+    dispatch_resume(g_pc_guard_timer);
+}
 
 #pragma mark - Helper
 
@@ -147,18 +187,49 @@ static void PCBootstrapGate(void) {
         // 1) 尽早 ptrace deny attach，阻断 lldb/debugserver
         [PCAntiCrack denyAttach];
 
-        // 2) 环境自检：抓包 / VPN / Frida / Cycript / SSL Kill Switch 等任意命中 → abort()
-        //    此处仅做一次预检（记录 reason），真正的"不可忍受"级闪退由网络层每次请求前触发；
-        //    启动期静默不弹 UI，防止窗口劫持到注入环境。
+        // 2) 反 hook / 反分析环境校验；检测到则直接拒绝启动闸门（不进入主界面也不弹激活）
         NSString *reason = nil;
         BOOL safeEnv = [PCAntiCrack check:&reason];
+        // RSA 公钥完整性自检
         if (safeEnv) safeEnv = [PCAntiCrack checkRSAKeyIntegrity];
-        if (!safeEnv) {
-            NSLog(@"[PersonalCenterUI] env compromised at launch: %@", reason ?: @"unknown");
-            // 启动时发现抓包 / 注入 —— 直接闪退，绝不让直链有任何机会出现
-            [PCAntiCrack crashIfEnvCompromised:NULL];
-            return;
+        // 启动时即做一次抓包检测，命中立即自毁
+        if (safeEnv) {
+            NSString *pr = nil;
+            if ([PCAntiCrack isProxyOrCapturingDetected:&pr]) {
+                [PCAntiCrack selfDestructReason:pr ?: @"proxy_at_launch"];
+                return;
+            }
         }
+
+        // 3) 监听 PCAuthManager 失效通知：强制踢回激活页
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:@"PCAuthDidInvalidate"
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification * _Nonnull note) {
+            // 再次兜底同步清理 pak
+            (void)[PCPakDownloader cleanupDownloadedPakFilesSyncReason:@"auth_invalidate"];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                PCPresentActivationWindow();
+            });
+        }];
+
+        // 4) 兜底监听终止事件 → 同步清理已下载 pak（与 PCAuthManager 的监听互为双保险）
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:UIApplicationWillTerminateNotification
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification * _Nonnull note) {
+            (void)[PCPakDownloader cleanupDownloadedPakFilesSyncReason:@"tweak_terminate"];
+        }];
+        // 同时兜底监听后台事件 → 异步清理
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:UIApplicationDidEnterBackgroundNotification
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification * _Nonnull note) {
+            [PCPakDownloader cleanupDownloadedPakFilesReason:@"tweak_background" completion:nil];
+        }];
 
         [[NSNotificationCenter defaultCenter]
             addObserverForName:UIApplicationDidFinishLaunchingNotification
@@ -167,17 +238,19 @@ static void PCBootstrapGate(void) {
                     usingBlock:^(NSNotification * _Nonnull note) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
-                // 再查一次代理 / VPN（冷启动后用户可能刚打开 Charles）
-                [PCAntiCrack crashIfEnvCompromised:NULL];
+                if (!safeEnv) return; // 不可信环境：静默不弹任何 UI
                 PCBootstrapGate();
+                // 启动周期巡检定时器
+                PCStartGuardTimer();
             });
         }];
 
         // 兜底：注入发生在 didFinishLaunching 之后
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            [PCAntiCrack crashIfEnvCompromised:NULL];
+            if (!safeEnv) return;
             PCBootstrapGate();
+            PCStartGuardTimer();
         });
     }
 }

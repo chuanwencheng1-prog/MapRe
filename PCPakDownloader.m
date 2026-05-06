@@ -15,8 +15,6 @@
 //
 
 #import "PCPakDownloader.h"
-#import "PCAntiCrack.h"
-#import "PCAuthManager.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -270,22 +268,6 @@ static BOOL const kPCOverwriteIfExists = YES;
                    overrideURL:(NSString *)urlString
                       progress:(PCPakProgressBlock)progress
                     completion:(PCPakCompletionBlock)completion {
-    // 下载入口三道硬闸：
-    //   1) 抓包 / VPN / Frida / 调试 —— 命中立即 abort()，直链无论如何不会暴露
-    //   2) 服务器不在线 —— 拒绝下载（UI 侧也已隐藏卡片）
-    //   3) 未激活 —— 拒绝下载
-    [PCAntiCrack crashIfEnvCompromised:NULL];
-    if (![[PCAuthManager sharedManager] isServerOnline] ||
-        ![[PCAuthManager sharedManager] isActivated]) {
-        NSError *e = [NSError errorWithDomain:@"PCPakDownloader" code:-10
-            userInfo:@{NSLocalizedDescriptionKey: @"服务不可用或未激活"}];
-        self.currentTitle    = title ?: @"";
-        self.progressBlock   = progress;
-        self.completionBlock = completion;
-        [self finishSuccess:NO path:nil error:e];
-        return;
-    }
-
     self.currentTitle    = title ?: @"";
     self.progressBlock   = progress;
     self.completionBlock = completion;
@@ -339,6 +321,58 @@ static BOOL const kPCOverwriteIfExists = YES;
 - (void)cancel {
     [self.task cancel];
     self.task = nil;
+}
+
+#pragma mark - 清理已下载的 pak
+
+/// 核心清理实现：只删类型为 .pak 的文件，不动用户其它数据。
+/// 遇不到目标目录 / 读取失败 都视为“已然”成功。
++ (NSUInteger)_internalCleanupPakWithReason:(NSString *)reason {
+    PCPakDownloader *inst = [self sharedDownloader];
+    [inst.task cancel];
+    inst.task = nil;
+
+    NSString *dir = [inst resolveTargetDirectory];
+    if (dir.length == 0) {
+        NSLog(@"[PersonalCenterUI][Downloader] 清理(reason=%@) 已取消：未定位到目标目录", reason ?: @"");
+        return 0;
+    }
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:dir]) return 0;
+
+    NSError *err = nil;
+    NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:dir error:&err];
+    if (err || files.count == 0) return 0;
+
+    NSUInteger removed = 0;
+    for (NSString *f in files) {
+        if (![[f.pathExtension lowercaseString] isEqualToString:@"pak"]) continue;
+        NSString *fp = [dir stringByAppendingPathComponent:f];
+        NSError *re = nil;
+        if ([fm removeItemAtPath:fp error:&re]) {
+            removed++;
+            NSLog(@"[PersonalCenterUI][Downloader] 清理(reason=%@) 已删除：%@", reason ?: @"", fp);
+        } else {
+            NSLog(@"[PersonalCenterUI][Downloader] 清理失败：%@ → %@", fp, re.localizedDescription);
+        }
+    }
+    NSLog(@"[PersonalCenterUI][Downloader] 清理完成(reason=%@)，共删除 %lu 个 pak", reason ?: @"", (unsigned long)removed);
+    return removed;
+}
+
++ (void)cleanupDownloadedPakFilesReason:(NSString *)reason
+                            completion:(void(^)(BOOL, NSUInteger))completion {
+    // 异步执行，避免阻塞主线（目录扫描可能稍慢）
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+        NSUInteger n = [self _internalCleanupPakWithReason:reason];
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(YES, n); });
+        }
+    });
+}
+
++ (NSUInteger)cleanupDownloadedPakFilesSyncReason:(NSString *)reason {
+    return [self _internalCleanupPakWithReason:reason];
 }
 
 #pragma mark - Helpers
