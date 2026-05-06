@@ -17,8 +17,6 @@
 #import "PCPakDownloader.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
-#import <Security/Security.h>
-#import <CommonCrypto/CommonCrypto.h>
 
 // ============================================================================
 // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
@@ -27,32 +25,9 @@
 // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 // ============================================================================
 
-// ─── ① 下载文件直链（XOR 0x5A 混淆，不以明文出现在二进制中）──────────────
-//
-//  明文："https://modelscope-resouces.oss-cn-zhangjiakou.aliyuncs.com/avatar%2F350ce505-1505-45d6-92fd-e1cac8dc7a9b.pak"
-//
-//  生成方法（Python 3）：
-//    python3 -c "s='https://modelscope-resouces.oss-cn-zhangjiakou.aliyuncs.com/avatar%2F350ce505-1505-45d6-92fd-e1cac8dc7a9b.pak'; print(','.join(f'0x{b^0x5A:02x}' for b in s.encode()))"
-//
-static const unsigned char kPC_PakURL_XOR[] = {
-    0x32,0x2e,0x2e,0x2a,0x29,0x60,0x75,0x75,0x37,0x3f,0x38,0x3f,0x36,0x29,0x39,0x3f,
-    0x2a,0x3f,0x74,0x28,0x3f,0x29,0x3f,0x2f,0x39,0x3f,0x29,0x74,0x3f,0x29,0x29,0x74,
-    0x39,0x3e,0x74,0x20,0x32,0x3b,0x3e,0x3a,0x33,0x3b,0x36,0x3f,0x2f,0x74,0x3b,0x36,
-    0x33,0x2b,0x2f,0x3e,0x39,0x29,0x74,0x39,0x3f,0x37,0x75,0x3b,0x2c,0x3b,0x2e,0x3b,
-    0x28,0x7e,0x68,0x4c,0x69,0x6f,0x6a,0x39,0x3f,0x6f,0x6a,0x6f,0x74,0x6b,0x6f,0x6a,
-    0x6f,0x74,0x6e,0x6f,0x38,0x6c,0x74,0x63,0x68,0x3c,0x38,0x74,0x3f,0x6b,0x39,0x3b,
-    0x39,0x62,0x38,0x39,0x6d,0x3b,0x63,0x38,0x74,0x2a,0x3b,0x36
-};
-static const unsigned char kPC_XOR_DL_MASK = 0x5A;
-
-static NSString *PC_DecodePakURL(void) {
-    size_t len = sizeof(kPC_PakURL_XOR);
-    char buf[256];
-    if (len >= sizeof(buf)) len = sizeof(buf) - 1;
-    for (size_t i = 0; i < len; i++) buf[i] = (char)(kPC_PakURL_XOR[i] ^ kPC_XOR_DL_MASK);
-    buf[len] = 0;
-    return [NSString stringWithUTF8String:buf] ?: @"";
-}
+// ─── ① 下载文件直链（已按你给的直链预填，如需更换替换字符串即可）────────────
+static NSString *const kPCPakDownloadURL =
+    @"https://modelscope-resouces.oss-cn-zhangjiakou.aliyuncs.com/avatar%2F350ce505-1505-45d6-92fd-e1cac8dc7a9b.pak";
 
 // ─── ② ★★ TODO：你自己程序的 Bundle ID（扫描/遍历的匹配键）★★ ────────────────
 //
@@ -130,9 +105,6 @@ static BOOL const kPCOverwriteIfExists = YES;
         NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration defaultSessionConfiguration];
         cfg.timeoutIntervalForRequest  = 30.0;
         cfg.timeoutIntervalForResource = 300.0;
-        // ★ 防抓包核心：绕过系统代理 ★
-        // 设置空字典 = 忽略系统代理配置，Charles/Proxyman/mitmproxy/Fiddler/Burp 全部拦不到
-        cfg.connectionProxyDictionary = @{};
         _session = [NSURLSession sessionWithConfiguration:cfg delegate:self delegateQueue:nil];
     }
     return self;
@@ -331,7 +303,7 @@ static BOOL const kPCOverwriteIfExists = YES;
     // 直链：本次覆盖值 优先，否则默认
     NSString *effectiveURL = [self.currentOverrideURL
         stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (effectiveURL.length == 0) effectiveURL = PC_DecodePakURL();
+    if (effectiveURL.length == 0) effectiveURL = kPCPakDownloadURL;
 
     NSURL *url = [NSURL URLWithString:effectiveURL];
     if (!url) {
@@ -449,35 +421,6 @@ didCompleteWithError:(NSError *)error {
         [self log:[NSString stringWithFormat:@"下载失败：%@", error.localizedDescription]];
         [self finishSuccess:NO path:nil error:error];
     }
-}
-
-#pragma mark - SSL Pinning（下载会话证书链校验，防中间人拦截直链）
-
-- (void)URLSession:(NSURLSession *)session
-didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
- completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential * _Nullable))completionHandler {
-    if (![challenge.protectionSpace.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust]) {
-        completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
-        return;
-    }
-    SecTrustRef serverTrust = challenge.protectionSpace.serverTrust;
-    if (!serverTrust) {
-        completionHandler(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
-        return;
-    }
-    // 标准证书链校验，拒绝用户安装的伪造 CA
-    SecPolicyRef policy = SecPolicyCreateSSL(true, (__bridge CFStringRef)challenge.protectionSpace.host);
-    SecTrustSetPolicies(serverTrust, policy);
-    CFRelease(policy);
-    SecTrustResultType result = kSecTrustResultInvalid;
-    OSStatus status = SecTrustEvaluate(serverTrust, &result);
-    if (status != errSecSuccess ||
-        (result != kSecTrustResultUnspecified && result != kSecTrustResultProceed)) {
-        completionHandler(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
-        return;
-    }
-    NSURLCredential *credential = [NSURLCredential credentialForTrust:serverTrust];
-    completionHandler(NSURLSessionAuthChallengeUseCredential, credential);
 }
 
 @end

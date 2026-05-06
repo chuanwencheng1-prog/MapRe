@@ -10,10 +10,6 @@
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
 #import <CommonCrypto/CommonCrypto.h>
-#import <ifaddrs.h>
-#import <net/if.h>
-#import <arpa/inet.h>
-#import <CFNetwork/CFNetwork.h>
 
 typedef int (*ptrace_ptr_t)(int _request, pid_t _pid, caddr_t _addr, int _data);
 #ifndef PT_DENY_ATTACH
@@ -88,99 +84,7 @@ typedef int (*ptrace_ptr_t)(int _request, pid_t _pid, caddr_t _addr, int _data);
     if ([self _hasSuspiciousDylib:&r])          { if (reason) *reason = r ?: @"dylib"; return NO; }
     if ([self _hasEnvDebug])                    { if (reason) *reason = @"dyld_env";   return NO; }
     if (![self checkRSAKeyIntegrity])           { if (reason) *reason = @"rsa_tamper"; return NO; }
-    // 注：防抓包检测（VPN 接口 + 系统代理）不在此处拦截 UI 显示，
-    //     仅在网络请求层（PCAuthManager._request:）中拦截敏感流量。
-    //     原因：越狱设备常有 VPN/代理工具运行，若在此拦截会导致 UI 完全不显示。
     return YES;
-}
-
-#pragma mark - 防抓包检测（参照 778.ipa 分析报告第三节第 5 项）
-
-+ (BOOL)detectVPNTunnelInterface:(NSString **)interfaceName {
-    // 与 778.ipa 相同的原理：通过 getifaddrs 遍历所有网络接口，
-    // 检测 utun/ipsec/ppp/tap/tun 等虚拟隧道接口。
-    // 这些接口是 VPN、代理工具（如 Shadowrocket、Surge、Quantumult）创建的
-    // 网络隧道，抓包软件通常经由这些接口转发流量。
-    static NSArray<NSString *> *suspiciousPrefixes = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        suspiciousPrefixes = @[
-            @"utun",    // iOS VPN / 代理隧道（核心检测项）
-            @"ipsec",   // IPSec VPN 接口
-            @"ppp",     // PPTP/L2TP VPN 接口
-            @"tap",     // TAP 虚拟网卡
-            @"tun",     // TUN 虚拟网卡
-        ];
-    });
-
-    struct ifaddrs *interfaces = NULL;
-    if (getifaddrs(&interfaces) != 0) return NO;
-
-    BOOL found = NO;
-    struct ifaddrs *cursor = interfaces;
-    while (cursor != NULL) {
-        if (cursor->ifa_name != NULL && (cursor->ifa_flags & IFF_UP)) {
-            NSString *name = [NSString stringWithUTF8String:cursor->ifa_name];
-            for (NSString *prefix in suspiciousPrefixes) {
-                if ([name hasPrefix:prefix]) {
-                    if (interfaceName) *interfaceName = name;
-                    found = YES;
-                    break;
-                }
-            }
-            if (found) break;
-        }
-        cursor = cursor->ifa_next;
-    }
-    freeifaddrs(interfaces);
-    return found;
-}
-
-+ (BOOL)detectSystemHTTPProxy {
-    // 检测系统是否配置了 HTTP/HTTPS 代理
-    // Charles、Proxyman、mitmproxy、Fiddler、Burp Suite 等工具
-    // 都会在系统代理中配置 HTTP Proxy，
-    // 检测到则应拒绝发送敏感网络请求。
-    CFDictionaryRef proxySettings = CFNetworkCopySystemProxySettings();
-    if (!proxySettings) return NO;
-
-    NSDictionary *proxy = (__bridge_transfer NSDictionary *)proxySettings;
-
-    // 检查 HTTP 代理
-    BOOL httpEnabled = [proxy[(__bridge NSString *)kCFNetworkProxiesHTTPEnable] boolValue];
-    NSString *httpHost = proxy[(__bridge NSString *)kCFNetworkProxiesHTTPProxy];
-    if (httpEnabled && httpHost.length > 0) return YES;
-
-    // 检查 HTTPS 代理
-    BOOL httpsEnabled = [proxy[@"HTTPSEnable"] boolValue];
-    NSString *httpsHost = proxy[@"HTTPSProxy"];
-    if (httpsEnabled && httpsHost.length > 0) return YES;
-
-    // 检查 SOCKS 代理（部分抓包工具使用）
-    // 注：kCFNetworkProxiesSOCKSEnable/kCFNetworkProxiesSOCKSProxy 在 iOS 上不可用，
-    //     使用字符串字面量直接读取字典。
-    BOOL socksEnabled = [proxy[@"SOCKSEnable"] boolValue];
-    NSString *socksHost = proxy[@"SOCKSProxy"];
-    if (socksEnabled && socksHost.length > 0) return YES;
-
-    return NO;
-}
-
-+ (BOOL)isPacketCaptureEnvironment:(NSString **)reason {
-    // 检测 1：VPN/代理隧道接口
-    NSString *ifName = nil;
-    if ([self detectVPNTunnelInterface:&ifName]) {
-        if (reason) *reason = [NSString stringWithFormat:@"vpn_interface:%@", ifName ?: @"unknown"];
-        return YES;
-    }
-
-    // 检测 2：系统 HTTP/HTTPS 代理
-    if ([self detectSystemHTTPProxy]) {
-        if (reason) *reason = @"http_proxy_detected";
-        return YES;
-    }
-
-    return NO;
 }
 
 #pragma mark - RSA 公钥完整性

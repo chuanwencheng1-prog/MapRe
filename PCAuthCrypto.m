@@ -29,7 +29,7 @@
 
 // ─── ① API 地址（XOR 混淆）─────────────────────────────────────────────────
 //
-//  明文："http://38.76.212.184:7873//api.php"
+//  明文："http://38.76.212.184:7873/api.php"
 //
 static const unsigned char kPC_ApiURL_XOR[] = {
     0x32,0x2e,0x2e,0x2a,0x60,0x75,0x75,0x69,0x62,0x74,0x6d,0x6c,0x74,0x68,0x6b,0x68,
@@ -39,12 +39,12 @@ static const unsigned char kPC_ApiURL_XOR[] = {
 
 // ─── ② BASE_SECRET（XOR 混淆）──────────────────────────────────────────────
 //
-//  明文："2658263de8731619120356f22a152521650a014b86ab45e7"（48 位 hex）
+//  明文："b4cee1957b7a51c1f730ffd9e8fb287019b186a576cc8bf8"（48 位 hex）
 //
 static const unsigned char kPC_BaseSecret_XOR[] = {
-    0x68,0x6c,0x6f,0x62,0x68,0x6c,0x69,0x3e,0x3f,0x62,0x6d,0x69,0x6b,0x6c,0x6b,0x63,
-    0x6b,0x68,0x6a,0x69,0x6f,0x6c,0x3c,0x68,0x68,0x3b,0x6b,0x6f,0x68,0x6f,0x68,0x6b,
-    0x6c,0x6f,0x6a,0x3b,0x6a,0x6b,0x6e,0x38,0x62,0x6c,0x3b,0x38,0x6e,0x6f,0x3f,0x6d
+    0x38,0x6e,0x39,0x3f,0x3f,0x6b,0x63,0x6f,0x6d,0x38,0x6d,0x3b,0x6f,0x6b,0x39,0x6b,
+    0x3c,0x6d,0x69,0x6a,0x3c,0x3c,0x3e,0x63,0x3f,0x62,0x3c,0x38,0x68,0x62,0x6d,0x6a,
+    0x6b,0x63,0x38,0x6b,0x62,0x6c,0x3b,0x6f,0x6d,0x6c,0x39,0x39,0x62,0x38,0x3c,0x62
 };
 
 // XOR 掩码（可按需改，同步改生成脚本中的 0x5A）
@@ -54,13 +54,13 @@ static const unsigned char kPC_XOR_MASK = 0x5A;
 //     从服务端 "后台 → 密钥" 页复制整块 PEM（含 BEGIN/END 行）粘贴到这里。
 static NSString *const kPC_RSA_PublicKeyPEM = @""
 "-----BEGIN PUBLIC KEY-----\n"
-"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsEIWBfhTIvJrTZR0kt8p\n"
-"vEdLgEHRsU3pbMLsCpsHVjEEalydTQof7MMISg47LWyW/Fq4rLLvhJ2HlhjfHkbg\n"
-"lr7ZT5lZIbTmoUTG9livFg7TWcqlm1kZ2cL9wI6UAWQf9rhNFFUGpWYWfmqJior1\n"
-"xJmWb2dxLAFHJ0soBe32l9+M0pf9Xvue3cwB4h/4poTTLv9rBZaJrvqh+07Fm2ee\n"
-"JJYAtbafwNrSpMERdIaXQmZLhu8Bi4sJexDcQZq5rAqx+JSD8PlWwaLrjP9YfZkc\n"
-"OfZPgdBQvQAImQ+Y7YkBfU8SbEnoHdSkqGcr0PcHO0x2kwo22Vt0+MLX6yW00P7k\n"
-"IQIDAQAB\n"
+"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3mCuSonBmh1qJY14MAIC\n"
+"c1ghCvu9i91x0mH/EVJELbU6hhnILJ3zbvw4wCUyEIdNLfgjOGJUicClpktDFz/v\n"
+"XGok+COlw7QAKCQZCelETJstvMg6hry34T37DId4d8QZtY0k37oXEXD7GkLTU3R0\n"
+"5qKH7YOBlarcCUQhjzruPZiBa0F5t3y28OhrVLJojcjWEPK3kOfmrAliQtnrqACe\n"
+"fN9PZGOsoZVUfDqELMx2tZXwSNn9Iqwo+k1wxDSmPo9ENl5O3rMbOjO+XaX05i4H\n"
+"Wf6/SzkaFJPfQI3xriCwd1oS4rMzsRTdZAHa0lUOEP+j7utug7mHLLzj806ZUkD+\n"
+"/QIDAQAB\n"
 "-----END PUBLIC KEY-----\n";
 
 // ============================================================================

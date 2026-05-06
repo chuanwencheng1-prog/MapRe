@@ -28,20 +28,6 @@ NS_ASSUME_NONNULL_BEGIN
 /// 运行时校验 RSA 公钥 PEM 是否被篡改（期望值由编译期固化）。
 + (BOOL)checkRSAKeyIntegrity;
 
-#pragma mark - 防抓包检测（参照 778.ipa 分析报告）
-
-/// 检测是否存在 VPN/代理隧道接口（getifaddrs 遍历 utun/ipsec/ppp/tap 等）
-/// 返回 YES 表示检测到疑似抓包环境（存在虚拟隧道接口）
-+ (BOOL)detectVPNTunnelInterface:(NSString * _Nullable * _Nullable)interfaceName;
-
-/// 检测系统是否配置了 HTTP/HTTPS 代理（Charles/Proxyman/mitmproxy 等工具的入口）
-/// 返回 YES 表示检测到代理配置
-+ (BOOL)detectSystemHTTPProxy;
-
-/// 综合防抓包环境检测（VPN 接口 + 系统代理），返回 YES 表示存在抓包风险
-/// reason (out) 可选，返回检测到的具体原因。
-+ (BOOL)isPacketCaptureEnvironment:(NSString * _Nullable * _Nullable)reason;
-
 @end
 
 NS_ASSUME_NONNULL_END
