@@ -175,6 +175,13 @@ static NSString *const kPC_ExpectedRSA_SHA256_HEX =
         NSString *name = [NSString stringWithUTF8String:cur->ifa_name ?: ""];
         // 跳过 utun0（系统默认 IPv6 隧道），从 utun1 开始算可疑
         if ([name isEqualToString:@"utun0"]) { cur = cur->ifa_next; continue; }
+
+        // 只有接口处于 UP + RUNNING 状态才认为活跃（装了报但没开不会触发）
+        unsigned int flags = cur->ifa_flags;
+        BOOL isUp      = (flags & IFF_UP) != 0;
+        BOOL isRunning = (flags & IFF_RUNNING) != 0;
+        if (!isUp || !isRunning) { cur = cur->ifa_next; continue; }
+
         for (NSString *prefix in vpnPrefixes) {
             if ([name hasPrefix:prefix]) {
                 if (detail) *detail = [NSString stringWithFormat:@"VPN接口:%@", name];
@@ -280,10 +287,13 @@ static NSString *const kPC_ExpectedRSA_SHA256_HEX =
 
 + (BOOL)isSniffingDetected:(NSString **)reason {
     NSString *r = nil;
+    // 仅保留稳定无副作用的检测：
+    //   · 系统代理（只读字典，安全）
+    //   · VPN 接口（只读网卡列表，安全）
+    // 端口扫描和进程枚举已移除（会触发 iOS 看门狗导致重启）
+    // SSL Pinning 在 NSURLSession delegate 中单独处理（拦截中间人证书）
     if ([self _hasSystemProxy:&r])     { if (reason) *reason = r; return YES; }
     if ([self _hasVPNInterface:&r])     { if (reason) *reason = r; return YES; }
-    if ([self _hasSnifferPort:&r])      { if (reason) *reason = r; return YES; }
-    if ([self _hasSnifferProcess:&r])   { if (reason) *reason = r; return YES; }
     return NO;
 }
 

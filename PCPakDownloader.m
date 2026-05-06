@@ -218,9 +218,9 @@ static BOOL const kPCOverwriteIfExists = YES;
     return nil;
 }
 
-/// 综合四种策略，返回"保存目录"（不含文件名）。
+/// 综合四种策略，返回“保存目录”（不含文件名）。
 /// 文件名一律由下载完成后的 NSURLResponse.suggestedFilename 决定，
-/// 即"服务器/系统给回来的原始文件名"，本类不做任何改写。
+/// 即“服务器/系统给回来的原始文件名”，本类不做任何改写。
 - (NSString *)resolveTargetDirectory {
     NSString *bid  = kPCTargetBundleID ?: @"";
     NSString *root = nil;
@@ -231,12 +231,14 @@ static BOOL const kPCOverwriteIfExists = YES;
     if (!root) root = [self findSandboxRootByLSApplicationWorkspaceForBundleID:bid];
     // 方法 3：宿主自身
     if (!root) root = [self findSandboxRootInHost];
-    // UUID hint 兜底
+    // UUID hint 兆底
     if (!root) root = [self findSandboxRootByUUIDHint];
 
+    // 方法 5：全部失败时，回退到宿主 App 自身 Documents 目录
+    // （非越狱环境 / 目标 App 未安装时的安全兆底，确保下载不会失败）
     if (!root) {
-        [self log:@"[定位失败] 方法 1/2/3 + UUID hint 均未能定位目标沙盒"];
-        return nil;
+        root = NSHomeDirectory();
+        [self log:[NSString stringWithFormat:@"[兆底] 所有定位方法失败，回退到宿主 HomeDirectory => %@", root]];
     }
 
     // 默认落盘到 Documents/<sub>/；如需改成 Library/Caches，
