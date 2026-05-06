@@ -52,6 +52,6 @@ jobs:
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ss65-package
+        name: 65ppp-package
         path: packages/*.deb
         if-no-files-found: warn

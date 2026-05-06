@@ -118,36 +118,72 @@ static NSString *const kPC_ExpectedRSA_SHA256_HEX =
 #pragma mark - VPN 检测
 
 + (BOOL)isVPNConnected {
-    // 使用 CFNetworkCopySystemProxySettings 检测真实 VPN 连接状态。
-    // __SCOPED__ 字典仅包含当前正在承载流量的活跃接口，
-    // VPN 未连接时 VPN 隧道接口不会出现在其中，
-    // 仅安装了抓包软件但未开启不会触发。
+    // 三路检测全覆盖：
+    //   1) __SCOPED__ 中查 VPN 隧道接口（utun1+/ppp/ipsec/tap）
+    //   2) 系统代理设置（HTTP/HTTPS/SOCKS 代理开启）
+    //   3) getifaddrs 兆底检查隧道接口
     //
-    // 重要：utun0 是 iOS 系统自带接口（始终存在），必须跳过！
-    // 只有 utun1/utun2/... 才是 VPN 应用创建的隧道接口。
+    // 重要：utun0 是 iOS 系统自带接口，始终存在，必须跳过！
 
     NSDictionary *dict = (__bridge_transfer NSDictionary *)CFNetworkCopySystemProxySettings();
-    if (!dict) return NO;
-
-    NSDictionary *scoped = dict[@"__SCOPED__"];
-    if (!scoped || scoped.count == 0) return NO;
-
-    for (NSString *interface in scoped.allKeys) {
-        // ppp / ipsec / tap 是明确的 VPN 接口，只有连接时才存在
-        if ([interface hasPrefix:@"ppp"] ||
-            [interface hasPrefix:@"ipsec"] ||
-            [interface hasPrefix:@"tap"]) {
-            return YES;
-        }
-        // utun0 是系统接口（始终存在），必须跳过！
-        // utun1 / utun2 / ... 才是 VPN 应用创建的隧道
-        if ([interface hasPrefix:@"utun"]) {
-            NSString *idx = [interface substringFromIndex:4];
-            if (idx.length > 0 && [idx integerValue] > 0) {
-                return YES;
+    if (dict) {
+        // === 路径 1：检查 __SCOPED__ 中的 VPN 隧道接口 ===
+        NSDictionary *scoped = dict[@"__SCOPED__"];
+        if (scoped && scoped.count > 0) {
+            for (NSString *interface in scoped.allKeys) {
+                if ([interface hasPrefix:@"ppp"] ||
+                    [interface hasPrefix:@"ipsec"] ||
+                    [interface hasPrefix:@"tap"]) {
+                    return YES;
+                }
+                if ([interface hasPrefix:@"utun"]) {
+                    NSString *idx = [interface substringFromIndex:4];
+                    if (idx.length > 0 && [idx integerValue] > 0) {
+                        return YES;
+                    }
+                }
             }
         }
+
+        // === 路径 2：检查系统 HTTP/HTTPS/SOCKS 代理是否开启 ===
+        // 抓包软件（ProxyPin/Shadowrocket 代理模式/Charles）会设置这些值
+        BOOL httpProxy  = [dict[@"HTTPEnable"] boolValue];
+        BOOL httpsProxy = [dict[@"HTTPSEnable"] boolValue];
+        BOOL socksProxy = [dict[@"SOCKSEnable"] boolValue];
+        if (httpProxy || httpsProxy || socksProxy) {
+            return YES;
+        }
     }
+
+    // === 路径 3：getifaddrs 兆底检查 VPN 隧道接口 ===
+    // 某些场景下 __SCOPED__ 可能没及时更新，用 getifaddrs 补充检测
+    struct ifaddrs *interfaces = NULL;
+    if (getifaddrs(&interfaces) == 0) {
+        struct ifaddrs *temp = interfaces;
+        while (temp != NULL) {
+            if (temp->ifa_name != NULL) {
+                NSString *name = [NSString stringWithUTF8String:temp->ifa_name];
+                // ppp / ipsec / tap 接口只有 VPN 连接时才存在
+                if ([name hasPrefix:@"ppp"] || [name hasPrefix:@"ipsec"] || [name hasPrefix:@"tap"]) {
+                    if ((temp->ifa_flags & IFF_UP) && (temp->ifa_flags & IFF_RUNNING)) {
+                        freeifaddrs(interfaces);
+                        return YES;
+                    }
+                }
+                // utun1+ 才是 VPN 隧道（跳过 utun0 系统接口）
+                if ([name hasPrefix:@"utun"] && name.length > 4) {
+                    NSInteger idx = [[name substringFromIndex:4] integerValue];
+                    if (idx > 0 && (temp->ifa_flags & IFF_UP) && (temp->ifa_flags & IFF_RUNNING)) {
+                        freeifaddrs(interfaces);
+                        return YES;
+                    }
+                }
+            }
+            temp = temp->ifa_next;
+        }
+        freeifaddrs(interfaces);
+    }
+
     return NO;
 }
 
