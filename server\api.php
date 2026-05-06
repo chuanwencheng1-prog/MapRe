@@ -152,18 +152,16 @@ case 'activate':
             if ($rec['bound_fingerprint'] !== $fp) {
                 $pdo->rollBack();
                 DB::log('activate','code_bound_other',['fp'=>$fp,'code'=>$code]);
-                json_out(['ok'=>false,'code'=>4103,'msg'=>'激活码已被其它设备绑定','cleanup'=>1]);
+                json_out(['ok'=>false,'code'=>4103,'msg'=>'激活码已被其它设备绑定']);
             }
             // 过期
             if ((int)$rec['expires_at'] > 0 && (int)$rec['expires_at'] < $nowT) {
                 $pdo->rollBack();
-                json_out(['ok'=>false,'code'=>4104,'msg'=>'激活码已过期','cleanup'=>1]);
+                json_out(['ok'=>false,'code'=>4104,'msg'=>'激活码已过期']);
             }
         } else {
             // 首次绑定：设定过期时间
-            $secs = (int)($rec['duration_seconds'] ?? 0);
-            if ($secs <= 0) $secs = (int)$rec['duration_days'] * 86400;
-            $expires = $nowT + $secs;
+            $expires = $nowT + (int)$rec['duration_days'] * 86400;
             $pdo->prepare('UPDATE codes SET status=1, bound_fingerprint=?, first_bind_at=?, expires_at=? WHERE id=?')
                 ->execute([$fp, $nowT, $expires, (int)$rec['id']]);
             $rec['expires_at']        = $expires;
@@ -202,7 +200,6 @@ case 'activate':
             'bound_until'        => (int)$rec['expires_at'],
             'level'              => (int)$rec['level'],
             'server_time'        => $nowT,
-            'device_fp'          => $fp,
         ]);
     } catch (Throwable $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
@@ -215,11 +212,11 @@ case 'heartbeat':
     $st = DB::pdo()->prepare('SELECT c.* FROM codes c WHERE c.id = ?');
     $st->execute([(int)$device['bound_code_id']]);
     $rec = $st->fetch();
-    if (!$rec)                                   json_out(['ok'=>false,'code'=>4110,'msg'=>'未绑定有效激活码','cleanup'=>1]);
-    if ((int)$rec['status'] === 2)               json_out(['ok'=>false,'code'=>4111,'msg'=>'激活码已禁用','cleanup'=>1]);
-    if ($rec['bound_fingerprint'] !== $fp)       json_out(['ok'=>false,'code'=>4112,'msg'=>'设备指纹不匹配','cleanup'=>1]);
+    if (!$rec)                                   json_out(['ok'=>false,'code'=>4110,'msg'=>'未绑定有效激活码']);
+    if ((int)$rec['status'] === 2)               json_out(['ok'=>false,'code'=>4111,'msg'=>'激活码已禁用']);
+    if ($rec['bound_fingerprint'] !== $fp)       json_out(['ok'=>false,'code'=>4112,'msg'=>'设备指纹不匹配']);
     if ((int)$rec['expires_at'] > 0 && (int)$rec['expires_at'] < now())
-                                                 json_out(['ok'=>false,'code'=>4113,'msg'=>'激活码已过期','cleanup'=>1]);
+                                                 json_out(['ok'=>false,'code'=>4113,'msg'=>'激活码已过期']);
 
     DB::pdo()->prepare('UPDATE devices SET last_seen = ?, last_ip = ?, client_ver = ? WHERE id = ?')
         ->execute([now(), client_ip(), substr((string)($payload['ver'] ?? ''), 0, 32), (int)$device['id']]);
@@ -231,7 +228,6 @@ case 'heartbeat':
         'session_expires_at' => (int)$device['session_expires_at'],
         'level'              => (int)$rec['level'],
         'server_time'        => now(),
-        'device_fp'          => $fp,
     ]);
     break;
 
@@ -244,7 +240,6 @@ case 'query':
         'level'              => (int)($rec['level']      ?? 0),
         'session_expires_at' => (int)$device['session_expires_at'],
         'server_time'        => now(),
-        'device_fp'          => $fp,
     ]);
     break;
 }

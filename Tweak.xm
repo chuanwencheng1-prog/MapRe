@@ -23,50 +23,6 @@
 #import "PCAuthManager.h"
 #import "PCAntiCrack.h"
 #import "PCActivationViewController.h"
-#import "PCPakDownloader.h"
-
-#pragma mark - 周期巡检定时器
-
-static dispatch_source_t g_pc_guard_timer = NULL;
-
-static void PCStartGuardTimer(void) {
-    if (g_pc_guard_timer) return;
-    dispatch_queue_t q = dispatch_queue_create("com.pcui.guard", DISPATCH_QUEUE_SERIAL);
-    g_pc_guard_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
-    // 首次 5s 后，之后每 10s 巡检一次
-    dispatch_source_set_timer(g_pc_guard_timer,
-                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)),
-                              10ull * NSEC_PER_SEC,
-                              1ull * NSEC_PER_SEC);
-    dispatch_source_set_event_handler(g_pc_guard_timer, ^{
-        @autoreleasepool {
-            // 注：这里命中任何一项都不得杀进程，仅做软性处理（登出 + 踢回激活页）；
-            //       旧实现直接 raise(SIGKILL) 会在 Filza(root) 下引发 SpringBoard 异常/重启。
-            // 1) 反调试/反注入检测
-            NSString *r = nil;
-            if (![PCAntiCrack check:&r]) {
-                NSLog(@"[PersonalCenterUI][guard] anticrack fail: %@", r ?: @"");
-                [[PCAuthManager sharedManager] forceInvalidateWithReason:r ?: @"anticrack"];
-                return;
-            }
-            // 2) 抓包/系统代理检测——仅记录，不采取任何强制动作
-            //    （许多用户日常开代理上网，不应因此被阻断激活或被踢下线）
-            NSString *pr = nil;
-            if ([PCAntiCrack isProxyOrCapturingDetected:&pr]) {
-                NSLog(@"[PersonalCenterUI][guard] proxy warn: %@", pr ?: @"");
-            }
-            // 3) RSA 公钥完整性复核
-            if (![PCAntiCrack checkRSAKeyIntegrity]) {
-                NSLog(@"[PersonalCenterUI][guard] rsa_tampered");
-                [[PCAuthManager sharedManager] forceInvalidateWithReason:@"rsa_tampered"];
-                return;
-            }
-            // 4) 活跃态下检测激活过期（恶意修改本地时间后也会在下次心跳时带回服务端时间）
-            (void)[[PCAuthManager sharedManager] isActivated];
-        }
-    });
-    dispatch_resume(g_pc_guard_timer);
-}
 
 #pragma mark - Helper
 
@@ -196,44 +152,6 @@ static void PCBootstrapGate(void) {
         BOOL safeEnv = [PCAntiCrack check:&reason];
         // RSA 公钥完整性自检
         if (safeEnv) safeEnv = [PCAntiCrack checkRSAKeyIntegrity];
-        // 启动时的代理检测：仅记录日志，不自毁。许多用户设备常开 WiFi 代理/VPN，
-        // 旧实现在这里 raise(SIGKILL) 会导致打开 Filza 即闪退，用户感知为"插件导致关机"。
-        if (safeEnv) {
-            NSString *pr = nil;
-            if ([PCAntiCrack isProxyOrCapturingDetected:&pr]) {
-                NSLog(@"[PersonalCenterUI] proxy warn at launch: %@", pr ?: @"");
-            }
-        }
-
-        // 3) 监听 PCAuthManager 失效通知：强制踢回激活页
-        [[NSNotificationCenter defaultCenter]
-            addObserverForName:@"PCAuthDidInvalidate"
-                        object:nil
-                         queue:[NSOperationQueue mainQueue]
-                    usingBlock:^(NSNotification * _Nonnull note) {
-            // 再次兜底同步清理 pak
-            (void)[PCPakDownloader cleanupDownloadedPakFilesSyncReason:@"auth_invalidate"];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                PCPresentActivationWindow();
-            });
-        }];
-
-        // 4) 兜底监听终止事件 → 同步清理已下载 pak（与 PCAuthManager 的监听互为双保险）
-        [[NSNotificationCenter defaultCenter]
-            addObserverForName:UIApplicationWillTerminateNotification
-                        object:nil
-                         queue:[NSOperationQueue mainQueue]
-                    usingBlock:^(NSNotification * _Nonnull note) {
-            (void)[PCPakDownloader cleanupDownloadedPakFilesSyncReason:@"tweak_terminate"];
-        }];
-        // 同时兜底监听后台事件 → 异步清理
-        [[NSNotificationCenter defaultCenter]
-            addObserverForName:UIApplicationDidEnterBackgroundNotification
-                        object:nil
-                         queue:[NSOperationQueue mainQueue]
-                    usingBlock:^(NSNotification * _Nonnull note) {
-            [PCPakDownloader cleanupDownloadedPakFilesReason:@"tweak_background" completion:nil];
-        }];
 
         [[NSNotificationCenter defaultCenter]
             addObserverForName:UIApplicationDidFinishLaunchingNotification
@@ -243,18 +161,33 @@ static void PCBootstrapGate(void) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
                 if (!safeEnv) return; // 不可信环境：静默不弹任何 UI
+
+                // 3) VPN/代理 检测：发现 VPN 连接立即闪退，防止直链被抓包
+                if ([PCAntiCrack isVPNConnected]) {
+                    NSLog(@"[PersonalCenterUI] 检测到 VPN/代理连接，执行闪退");
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                                   dispatch_get_main_queue(), ^{ exit(0); });
+                    return;
+                }
+
                 PCBootstrapGate();
-                // 启动周期巡检定时器
-                PCStartGuardTimer();
             });
         }];
 
-        // 兜底：注入发生在 didFinishLaunching 之后
+        // 兆底：注入发生在 didFinishLaunching 之后
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             if (!safeEnv) return;
+
+            // 兆底也检测 VPN
+            if ([PCAntiCrack isVPNConnected]) {
+                NSLog(@"[PersonalCenterUI] [兆底] 检测到 VPN/代理连接，执行闪退");
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{ exit(0); });
+                return;
+            }
+
             PCBootstrapGate();
-            PCStartGuardTimer();
         });
     }
 }

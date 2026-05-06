@@ -288,6 +288,7 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
 @property (nonatomic, strong) UIView              *headerBar;        // .app-header
 @property (nonatomic, strong) CAGradientLayer     *headerGradient;
 @property (nonatomic, strong) UILabel             *headerTitle;
+@property (nonatomic, strong) UILabel             *expireLabel;      // 到期时间标签
 @property (nonatomic, strong) UIScrollView        *scroll;           // .main-wrap
 @property (nonatomic, strong) NSMutableArray<UIView *>     *cardWrappers;  // shadow containers
 @property (nonatomic, strong) NSMutableArray<PCMenuCardView *> *cards;
@@ -334,6 +335,14 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
     self.headerTitle.font = [UIFont systemFontOfSize:18 weight:UIFontWeightSemibold];
     self.headerTitle.textAlignment = NSTextAlignmentCenter;
     [self.headerBar addSubview:self.headerTitle];
+
+    // 到期时间标签（显示在"超凡"下方）
+    self.expireLabel = [[UILabel alloc] init];
+    self.expireLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.85];
+    self.expireLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
+    self.expireLabel.textAlignment = NSTextAlignmentCenter;
+    [self.headerBar addSubview:self.expireLabel];
+    [self _updateExpireLabel];
 }
 
 - (void)buildScroll {
@@ -392,14 +401,15 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
     CGFloat W = self.view.bounds.size.width;
     CGFloat H = self.view.bounds.size.height;
 
-    // 状态栏 + 56 pt 标题栏
+    // 状态栏 + 56 pt 标题栏 + 20pt 到期时间行
     CGFloat statusH = 0;
     if (@available(iOS 11.0, *)) statusH = self.view.safeAreaInsets.top;
     if (statusH < 20) statusH = 20;
-    CGFloat headerH = statusH + 56;
+    CGFloat headerH = statusH + 56 + 18; // 增加 18pt 给到期时间
     self.headerBar.frame = CGRectMake(0, 0, W, headerH);
     self.headerGradient.frame = self.headerBar.bounds;
-    self.headerTitle.frame = CGRectMake(0, statusH, W, 56);
+    self.headerTitle.frame = CGRectMake(0, statusH, W, 40);
+    self.expireLabel.frame = CGRectMake(0, statusH + 38, W, 16);
 
     // margin-top 68 ≈ header 56 + gap 12；这里 scroll 从 headerH 开始
     CGFloat scrollY = headerH;
@@ -439,6 +449,20 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
                          completion:nil];
     } else {
         block();
+    }
+}
+
+#pragma mark - 到期时间显示
+
+- (void)_updateExpireLabel {
+    NSDate *expire = [[PCAuthManager sharedManager] boundUntil];
+    if (expire) {
+        NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+        fmt.dateFormat = @"yyyy-MM-dd HH:mm";
+        fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"zh_CN"];
+        self.expireLabel.text = [NSString stringWithFormat:@"到期时间：%@", [fmt stringFromDate:expire]];
+    } else {
+        self.expireLabel.text = @"到期时间：未知";
     }
 }
 

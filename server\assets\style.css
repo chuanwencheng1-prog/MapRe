@@ -101,28 +101,3 @@ code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
 
 /* 响应式保底：小屏下表格横向滚动 */
 .pc-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
-
-/* 复制 Toast */
-.pc-toast{
-  position:fixed;left:50%;bottom:40px;transform:translate(-50%,20px);
-  padding:10px 16px;border-radius:10px;background:rgba(15,23,42,.95);
-  color:#e5e7eb;font-size:13px;border:1px solid var(--line);
-  box-shadow:0 10px 30px rgba(0,0,0,.35);opacity:0;pointer-events:none;
-  transition:opacity .2s ease, transform .2s ease;z-index:9999;max-width:80vw;
-  word-break:break-all;
-}
-.pc-toast.show{opacity:1;transform:translate(-50%,0)}
-
-/* 复制代码样式增强 */
-code.pc-copy{
-  padding:3px 8px;border-radius:6px;background:rgba(22,163,74,.08);
-  border:1px dashed rgba(22,163,74,.35);color:#bbf7d0;
-  transition:background .15s ease;
-}
-code.pc-copy:hover{background:rgba(22,163,74,.18);color:#fff}
-code.pc-copy:active{background:rgba(22,163,74,.35)}
-
-/* checkbox 在表格里放大点击区 */
-.pc-list input[type=checkbox]{
-  width:18px;height:18px;accent-color:var(--brand);cursor:pointer;
-}

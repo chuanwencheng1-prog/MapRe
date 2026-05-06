@@ -29,7 +29,7 @@
 
 // ─── ① API 地址（XOR 混淆）─────────────────────────────────────────────────
 //
-//  明文："http://38.76.212.184:7873/api.php"
+//  明文："http://38.76.212.184:7873//api.php"
 //
 static const unsigned char kPC_ApiURL_XOR[] = {
     0x32,0x2e,0x2e,0x2a,0x60,0x75,0x75,0x69,0x62,0x74,0x6d,0x6c,0x74,0x68,0x6b,0x68,
@@ -39,14 +39,13 @@ static const unsigned char kPC_ApiURL_XOR[] = {
 
 // ─── ② BASE_SECRET（XOR 混淆）──────────────────────────────────────────────
 //
-//  明文："35d6055da43facec63c315e43a8492f73143db14c00c5970"（48 位 hex）
+//  明文："673ee324c9a0337b73b4ebb00ad0b15de16c837341f9e0dd"（48 位 hex）
 //
 static const unsigned char kPC_BaseSecret_XOR[] = {
-    0x69,0x6f,0x3e,0x6c,0x6a,0x6f,0x6f,0x3e,0x3b,0x6e,0x69,0x3c,0x3b,0x39,0x3f,0x39,
-    0x6c,0x69,0x39,0x69,0x6b,0x6f,0x3f,0x6e,0x69,0x3b,0x62,0x6e,0x63,0x68,0x3c,0x6d,
-    0x69,0x6b,0x6e,0x69,0x3e,0x38,0x6b,0x6e,0x39,0x6a,0x6a,0x39,0x6f,0x63,0x6d,0x6a
+    0x6c,0x6d,0x69,0x3f,0x3f,0x69,0x68,0x6e,0x39,0x63,0x3b,0x6a,0x69,0x69,0x6d,0x38,
+    0x6d,0x69,0x38,0x6e,0x3f,0x38,0x38,0x6a,0x6a,0x3b,0x3e,0x6a,0x38,0x6b,0x6f,0x3e,
+    0x3f,0x6b,0x6c,0x39,0x62,0x69,0x6d,0x69,0x6e,0x6b,0x3c,0x63,0x3f,0x6a,0x3e,0x3e
 };
-
 
 // XOR 掩码（可按需改，同步改生成脚本中的 0x5A）
 static const unsigned char kPC_XOR_MASK = 0x5A;
@@ -55,14 +54,15 @@ static const unsigned char kPC_XOR_MASK = 0x5A;
 //     从服务端 "后台 → 密钥" 页复制整块 PEM（含 BEGIN/END 行）粘贴到这里。
 static NSString *const kPC_RSA_PublicKeyPEM = @""
 "-----BEGIN PUBLIC KEY-----\n"
-"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAu/hurCDXDSb5K1Nim3a9\n"
-"xy4HKUjZIxY1N/qAdUUWYVpePySmyBOA0xD3HnPIRVogTOQMJpXShS5l2UGlfulT\n"
-"adQfDzuOCVvv12RBDUfo7evSZrXP/X9nUESzF6mcKLiFlgGloVwxO3zsisZPLvC6\n"
-"jHKmzEAp0kNc9WZieI+YsVsTHbp+B2RTqBPctF5WvS6V59CkO8ISL+iuKOtd65Rb\n"
-"CuQyDIV/qsnn2CxzvjFgL0pOHHAnW5yI3itcoG+JxTcmITy7I1T/WTLtZLhqZAyW\n"
-"lC+HkpkRCkslb6SaNtjdYFZBPcmo1dIe71vPhbM3dAP0g2DZqp4lL0J6C0QRMEFv\n"
-"qwIDAQAB\n"
+"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAv0wXrpE0wtC3DzbrfCu9\n"
+"t31Qht+XkCagfxBmotKsXManEJkkGPHk7iy76ZS5OVj5tzyJxP/2ChhhQqGsePKm\n"
+"+/alvGHrA4FFyXAisf5F7nDG1Iaa5VUZ8INzWQL7ruIRzXDkks4LvpmNX0zJo5E8\n"
+"LT5xgGLrDQe46XYIBv0fbhjrTgQzgiRd+4JcktbnGwZQb1knNrf7gRbb1Ko5lnv3\n"
+"8NKEGGNzI5vKSLtUvDEvAjnu5ZMrUZVVE4lEbu4XwHhqDDq5MsOpp8YvGmzyioJI\n"
+"fc9g18jeZWjdnPckl/2PJWcZSOcnLP9NNo0JKWWFP2p+diwvQtHyP9YUrn+20c0n\n"
+"+QIDAQAB\n"
 "-----END PUBLIC KEY-----\n";
+
 // ============================================================================
 
 static NSString *PC_XOR_Decode(const unsigned char *bytes, size_t len) {

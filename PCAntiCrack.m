@@ -9,11 +9,9 @@
 #import <sys/sysctl.h>
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
-#import <signal.h>
-#import <unistd.h>
-#import <stdlib.h>
 #import <CommonCrypto/CommonCrypto.h>
-#import <CFNetwork/CFNetwork.h>
+#import <ifaddrs.h>
+#import <net/if.h>
 
 typedef int (*ptrace_ptr_t)(int _request, pid_t _pid, caddr_t _addr, int _data);
 #ifndef PT_DENY_ATTACH
@@ -91,95 +89,6 @@ typedef int (*ptrace_ptr_t)(int _request, pid_t _pid, caddr_t _addr, int _data);
     return YES;
 }
 
-#pragma mark - 抓包 / 代理 检测
-
-/// 检测系统 HTTP/HTTPS 代理是否开启（Charles / Stream / Fiddler 等软件必开）
-+ (BOOL)_systemProxyEnabled:(NSString **)detail {
-    CFDictionaryRef proxyDict = CFNetworkCopySystemProxySettings();
-    if (!proxyDict) return NO;
-    NSDictionary *d = (__bridge_transfer NSDictionary *)proxyDict;
-    // HTTPProxy / HTTPSProxy / HTTPEnable / HTTPSEnable
-    id httpEnable  = d[(NSString *)kCFNetworkProxiesHTTPEnable];
-    id httpHost    = d[(NSString *)kCFNetworkProxiesHTTPProxy];
-    id httpsEnable = d[@"HTTPSEnable"];   // 私有 key，对 iOS 仍然返回
-    id httpsHost   = d[@"HTTPSProxy"];
-    BOOL on = NO;
-    NSMutableArray *bits = [NSMutableArray array];
-    if ([httpEnable  boolValue] && [httpHost  isKindOfClass:[NSString class]] && [httpHost  length]>0) { on = YES; [bits addObject:[NSString stringWithFormat:@"http=%@",httpHost]]; }
-    if ([httpsEnable boolValue] && [httpsHost isKindOfClass:[NSString class]] && [httpsHost length]>0) { on = YES; [bits addObject:[NSString stringWithFormat:@"https=%@",httpsHost]]; }
-    if (on && detail) *detail = [bits componentsJoinedByString:@","];
-    return on;
-}
-
-/// 检测 SSL Kill Switch / 绕过证书校验 类扩展
-+ (BOOL)_hasSSLKillDylib:(NSString **)matched {
-    static NSArray<NSString *> *bad = nil;
-    static dispatch_once_t once; dispatch_once(&once, ^{
-        bad = @[
-            @"SSLKillSwitch",
-            @"SSLKillSwitch2",
-            @"ssl_kill_switch",
-            @"TrustKit",                 // 激发抓包实践中常配合注入
-            @"Substitute",              // 用于重新注入抓包工具
-            @"InjectServer"
-        ];
-    });
-    uint32_t count = _dyld_image_count();
-    for (uint32_t i = 0; i < count; i++) {
-        const char *n = _dyld_get_image_name(i);
-        if (!n) continue;
-        NSString *name = [NSString stringWithUTF8String:n];
-        for (NSString *key in bad) {
-            if ([name rangeOfString:key options:NSCaseInsensitiveSearch].location != NSNotFound) {
-                if (matched) *matched = name;
-                return YES;
-            }
-        }
-    }
-    return NO;
-}
-
-+ (BOOL)isProxyOrCapturingDetected:(NSString **)reason {
-    NSString *d = nil;
-    if ([self _systemProxyEnabled:&d]) {
-        if (reason) *reason = [NSString stringWithFormat:@"proxy(%@)", d ?: @"on"];
-        return YES;
-    }
-    NSString *m = nil;
-    if ([self _hasSSLKillDylib:&m]) {
-        if (reason) *reason = [NSString stringWithFormat:@"ssl_kill(%@)", [m lastPathComponent]];
-        return YES;
-    }
-    return NO;
-}
-
-#pragma mark - 温和退出（禁止 kill 宿主进程）
-
-// 说明：旧实现使用 raise(SIGKILL) + _exit(0) + abort() 强杀宿主进程，
-//      在 Filza(root) 等越狱宿主下极易引起 SpringBoard 异常 / 看门狗重启，
-//      用户表现为"点击激活后手机关机 / 白苹果"。
-//      现改为：仅做日志记录 + 发出失效通知，由 UI 层优雅 dismiss 回激活页。
-//      ——— 永远不得在此函数内结束进程（"kill free" 契约）。
-+ (void)selfDestructReason:(NSString *)reason {
-    NSString *r = reason ?: @"unknown";
-    NSLog(@"[PersonalCenterUI][AntiCrack] soft-exit → %@", r);
-
-    static dispatch_once_t onceDedup;
-    static NSTimeInterval lastTs = 0;
-    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    // 10s 内同类事件只派发一次，避免定时器 + 通知双触发导致 UI 抖动
-    dispatch_once(&onceDedup, ^{ lastTs = 0; });
-    if (now - lastTs < 10.0) return;
-    lastTs = now;
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"PCAuthDidInvalidate"
-                                                            object:nil
-                                                          userInfo:@{ @"reason": r,
-                                                                      @"soft":   @1 }];
-    });
-}
-
 #pragma mark - RSA 公钥完整性
 
 // 这里只校验 PEM 字节的 SHA-256 与一个"期望哈希"是否一致。
@@ -203,6 +112,34 @@ static NSString *const kPC_ExpectedRSA_SHA256_HEX =
     NSData *raw = [pem dataUsingEncoding:NSUTF8StringEncoding];
     NSString *got = [PCAuthCrypto hexString:[PCAuthCrypto sha256:raw]];
     return [got caseInsensitiveCompare:kPC_ExpectedRSA_SHA256_HEX] == NSOrderedSame;
+}
+
+#pragma mark - VPN 检测
+
++ (BOOL)isVPNConnected {
+    // 仅通过网络接口检测：只有 VPN 真正连接时，utun/ppp/ipsec 接口才会处于 UP+RUNNING 状态。
+    // 安装了抓包软件但未开启 VPN 时，这些接口不会出现或不会处于活跃状态，不会误判。
+    struct ifaddrs *interfaces = NULL;
+    BOOL vpnFound = NO;
+    if (getifaddrs(&interfaces) == 0) {
+        struct ifaddrs *temp = interfaces;
+        while (temp != NULL) {
+            if (temp->ifa_name != NULL) {
+                NSString *name = [NSString stringWithUTF8String:temp->ifa_name];
+                // utun = iOS VPN 隧道接口, ppp = PPTP/L2TP, ipsec = IPSec VPN
+                if ([name hasPrefix:@"utun"] || [name hasPrefix:@"ppp"] || [name hasPrefix:@"ipsec"]) {
+                    // 必须同时满足 UP（接口已启用）和 RUNNING（链路已建立）才认定 VPN 正在连接中
+                    if ((temp->ifa_flags & IFF_UP) && (temp->ifa_flags & IFF_RUNNING)) {
+                        vpnFound = YES;
+                        break;
+                    }
+                }
+            }
+            temp = temp->ifa_next;
+        }
+        freeifaddrs(interfaces);
+    }
+    return vpnFound;
 }
 
 @end

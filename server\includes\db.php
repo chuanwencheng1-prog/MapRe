@@ -66,7 +66,6 @@ final class DB
             status INTEGER NOT NULL DEFAULT 0,
             level INTEGER NOT NULL DEFAULT 1,
             duration_days INTEGER NOT NULL DEFAULT 30,
-            duration_seconds $ts NOT NULL DEFAULT 0,
             bound_fingerprint VARCHAR(128) DEFAULT '',
             first_bind_at $ts DEFAULT 0,
             expires_at $ts DEFAULT 0,
@@ -74,23 +73,6 @@ final class DB
             notes VARCHAR(255) DEFAULT '',
             created_at $ts NOT NULL
         )");
-
-        // --- 向后兼容老版表：duration_seconds 缺字段时 ALTER ADD ---
-        try {
-            $cols = [];
-            if (self::driver() === 'mysql') {
-                $rs = $p->query("SHOW COLUMNS FROM codes");
-                foreach ($rs as $r) { $cols[] = $r['Field'] ?? ''; }
-            } else {
-                $rs = $p->query("PRAGMA table_info(codes)");
-                foreach ($rs as $r) { $cols[] = $r['name'] ?? ''; }
-            }
-            if (!in_array('duration_seconds', $cols, true)) {
-                $p->exec("ALTER TABLE codes ADD COLUMN duration_seconds $ts NOT NULL DEFAULT 0");
-                // 将已有 duration_days 迁移为秒
-                $p->exec("UPDATE codes SET duration_seconds = duration_days * 86400 WHERE duration_seconds = 0");
-            }
-        } catch (Throwable $e) { /* 忽略 */ }
 
         $p->exec("CREATE TABLE IF NOT EXISTS devices (
             id $ai,

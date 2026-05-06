@@ -32,7 +32,6 @@ static NSString *PCDeviceModel(void) {
 @property (nonatomic, assign) NSInteger level;
 @property (nonatomic, strong) NSTimer *heartbeatTimer;
 @property (nonatomic, strong) dispatch_queue_t q;
-@property (nonatomic, assign) BOOL expireCleanupFired; // 本次会话过期只清一次，避免刷屏
 @end
 
 @implementation PCAuthManager
@@ -49,23 +48,8 @@ static NSString *PCDeviceModel(void) {
         _q = dispatch_queue_create("com.pcui.auth.q", DISPATCH_QUEUE_SERIAL);
         _fingerprint = [self _computeFingerprint];
         [self _loadCache];
-        // 生命周期观察者：退后台/即将终止 → 一律清理已下载 pak
-        NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
-        [nc addObserver:self selector:@selector(_onAppDidEnterBackground)
-                   name:UIApplicationDidEnterBackgroundNotification object:nil];
-        [nc addObserver:self selector:@selector(_onAppWillTerminate)
-                   name:UIApplicationWillTerminateNotification object:nil];
-        [nc addObserver:self selector:@selector(_onAppWillResignActive)
-                   name:UIApplicationWillResignActiveNotification object:nil];
-        [nc addObserver:self selector:@selector(_onAppDidBecomeActive)
-                   name:UIApplicationDidBecomeActiveNotification object:nil];
     }
     return self;
-}
-
-- (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [self _stopHeartbeat];
 }
 
 #pragma mark - Public
@@ -81,16 +65,7 @@ static NSString *PCDeviceModel(void) {
     if (_sessionKey.length   == 0)                   return NO;
     if (_boundUntilTs <= 0)                          return NO;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (_boundUntilTs   < now) {
-        // 本地检测到已过期 → 触发一次性强清理（登出 + 清 pak）
-        if (!_expireCleanupFired) {
-            _expireCleanupFired = YES;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self forceInvalidateWithReason:@"local_expired"];
-            });
-        }
-        return NO;
-    }
+    if (_boundUntilTs   < now)                       return NO;
     if (_sessionExpireAt < now - 60)                 return NO; // 会话过期也视为失效
     return YES;
 }
@@ -104,20 +79,6 @@ static NSString *PCDeviceModel(void) {
         [[NSFileManager defaultManager] removeItemAtPath:PCAuthCachePath() error:nil];
     });
     [self _stopHeartbeat];
-}
-
-- (void)forceInvalidateWithReason:(NSString *)reason {
-    NSLog(@"[PCAuth] forceInvalidate reason=%@", reason ?: @"unknown");
-    // 1) 清 pak（异步，不阻塞主线程）
-    [PCPakDownloader cleanupDownloadedPakFilesReason:(reason ?: @"invalidate") completion:nil];
-    // 2) 登出（清缓存 + 停心跳）
-    [self signOut];
-    // 3) 通知外层踢 UI 回激活页
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"PCAuthDidInvalidate"
-                                                            object:self
-                                                          userInfo:@{ @"reason": reason ?: @"" }];
-    });
 }
 
 - (void)bootstrapWithCompletion:(PCAuthCompletion)completion {
@@ -144,12 +105,10 @@ static NSString *PCDeviceModel(void) {
 }
 
 - (void)activateWithCode:(NSString *)code completion:(PCAuthCompletion)completion {
-    // 注：激活流程可能需要用户开代理才能访问服务器。旧实现在这里直接 `check`
-    //       将代理/调试等忽强忽弱的信号误判为"环境异常"并从源头阻断激活，导致正常
-    //       用户永远无法激活。这里改为：仅记录日志，不拦截激活请求。
-    NSString *envReason = nil;
-    if (![PCAntiCrack check:&envReason]) {
-        NSLog(@"[PCAuth] activate warn: %@", envReason ?: @"env");
+    NSString *reason = nil;
+    if (![PCAntiCrack check:&reason]) {
+        if (completion) completion(NO, [NSString stringWithFormat:@"环境异常：%@", reason ?: @"unknown"]);
+        return;
     }
     code = [[code stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] uppercaseString];
     if (code.length < 8) { if (completion) completion(NO, @"激活码格式不正确"); return; }
@@ -174,50 +133,75 @@ static NSString *PCDeviceModel(void) {
 }
 
 - (void)heartbeat {
-    if (![self isActivated]) return;
+    if (![self isActivated]) {
+        // 本地已过期，触发清理+闪退
+        [self expireAndCleanup];
+        return;
+    }
     [self _request:@"heartbeat" payload:@{@"ver": [self _clientVer]} completion:^(BOOL ok, NSDictionary *r, NSString *msg) {
         if (!ok) {
-            // 心跳失败（可能是服务端踢下线 / 卡密到期）→ 强制清理
-            [self forceInvalidateWithReason:@"heartbeat_failed"];
-        } else {
+            [self signOut];
+            // 心跳失败（服务端踢下线/到期），执行清理+闪退
+            [self expireAndCleanup];
+        }
+        else {
             self.boundUntilTs    = [r[@"bound_until"]        doubleValue] ?: self.boundUntilTs;
             self.sessionExpireAt = [r[@"session_expires_at"] doubleValue] ?: self.sessionExpireAt;
-            // 服务端可能在成功响应中下发 cleanup 指示（例如强制刷新pak）
-            if ([[r objectForKey:@"cleanup"] intValue] == 1) {
-                [PCPakDownloader cleanupDownloadedPakFilesReason:@"server_hint" completion:nil];
-            }
             [self _saveCache];
+            // 心跳成功后再检查一次是否已到期
+            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+            if (self.boundUntilTs > 0 && self.boundUntilTs < now) {
+                [self expireAndCleanup];
+            }
         }
     }];
 }
 
-#pragma mark - 生命周期
+#pragma mark - 到期清理 + 闪退
 
-- (void)_onAppDidEnterBackground {
-    // 进入后台立即清理 pak（异步即可）
-    [PCPakDownloader cleanupDownloadedPakFilesReason:@"app_background" completion:nil];
+- (void)expireAndCleanup {
+    NSLog(@"[PersonalCenterUI] 卡密到期，开始清理 pak 文件...");
+
+    // 清理目标 App 沙箱中已下载的 pak 文件
+    [self _cleanDownloadedPakFiles];
+
+    // 清除本地缓存
+    [self signOut];
+
+    // 延迟 0.5 秒后闪退（确保文件删除完成）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        NSLog(@"[PersonalCenterUI] 清理完成，执行闪退");
+        // 使用未公开的 exit 强制结束进程
+        exit(0);
+    });
 }
 
-- (void)_onAppWillTerminate {
-    // 即将终止：必须同步清理，否则进程死掉任务未执行
-    (void)[PCPakDownloader cleanupDownloadedPakFilesSyncReason:@"app_terminate"];
-}
-
-- (void)_onAppWillResignActive {
-    // 失活（下拉控制中心、来电、系统权限弹窗、切后台等）触发非常频繁，
-    // 旧实现在这里做代理检测并自毁 → 正好覆盖"点击激活 → HTTPS 请求中"的时间窗，
-    // 叠加用户开启的代理/VPN 即命中强杀，表现为"点击激活后手机关机"。
-    // 这里一律不做任何强制动作，环境自检统一放到 heartbeat / guard timer 中做软性处理。
-    (void)self;
-}
-
-- (void)_onAppDidBecomeActive {
-    // 回到前台：只做有效期自检 + 主动心跳，不再触发任何进程级强杀
-    if (![self isActivated]) {
-        // isActivated 内部会自动触发 forceInvalidate（如果是本地过期）
+/// 仅清理本工具下载过的 pak 文件（通过下载记录定位，不会删除目录下其它 pak）
+- (void)_cleanDownloadedPakFiles {
+    NSArray<NSString *> *downloadedPaths = [PCPakDownloader downloadedFilePaths];
+    if (downloadedPaths.count == 0) {
+        NSLog(@"[PersonalCenterUI] 清理：无已下载记录，跳过");
         return;
     }
-    [self heartbeat];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *path in downloadedPaths) {
+        if ([fm fileExistsAtPath:path]) {
+            NSError *rmErr = nil;
+            [fm removeItemAtPath:path error:&rmErr];
+            if (rmErr) {
+                NSLog(@"[PersonalCenterUI] 删除失败：%@ - %@", path.lastPathComponent, rmErr.localizedDescription);
+            } else {
+                NSLog(@"[PersonalCenterUI] 已删除：%@", path.lastPathComponent);
+            }
+        } else {
+            NSLog(@"[PersonalCenterUI] 文件不存在，跳过：%@", path.lastPathComponent);
+        }
+    }
+
+    // 清除下载记录
+    [PCPakDownloader clearDownloadedFilesRecord];
 }
 
 #pragma mark - 指纹
@@ -367,10 +351,6 @@ static NSString *PCDeviceModel(void) {
             if (![j isKindOfClass:[NSDictionary class]]) { if (completion) completion(NO, nil, @"响应解析失败"); return; }
             if (![j[@"ok"] boolValue]) {
                 NSString *m = [j[@"msg"] description] ?: @"验证失败";
-                // 服务端在失败响应明文层下发 cleanup=1（卡密到期/被禁用/换机）→ 立即清 pak
-                if ([[j objectForKey:@"cleanup"] intValue] == 1) {
-                    [PCPakDownloader cleanupDownloadedPakFilesReason:@"server_reject" completion:nil];
-                }
                 if (completion) completion(NO, nil, m);
                 return;
             }
@@ -398,15 +378,6 @@ static NSString *PCDeviceModel(void) {
             if (!pt) { if (completion) completion(NO, nil, @"响应解密失败"); return; }
             NSDictionary *inner = [NSJSONSerialization JSONObjectWithData:pt options:0 error:nil];
             if (![inner isKindOfClass:[NSDictionary class]]) { if (completion) completion(NO, nil, @"响应解析失败"); return; }
-            // 一机一码强化：服务端在解密后的 inner 中回传 device_fp（HMAC(fp, shared)）
-            // 这里只需比对服务端回传的 fp 与本地一致（服务端也会在 activate 时落库）
-            NSString *srvFp = [inner[@"device_fp"] description];
-            if (srvFp.length > 0 && ![srvFp isEqualToString:self.fingerprint]) {
-                // 指纹不一致 → 换机/克隆，立即强制清理
-                [self forceInvalidateWithReason:@"fingerprint_mismatch"];
-                if (completion) completion(NO, nil, @"设备指纹不匹配");
-                return;
-            }
             if (completion) completion(YES, inner, [inner[@"msg"] description] ?: @"ok");
         }] resume];
     });

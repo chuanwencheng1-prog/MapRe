@@ -28,13 +28,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// 运行时校验 RSA 公钥 PEM 是否被篡改（期望值由编译期固化）。
 + (BOOL)checkRSAKeyIntegrity;
 
-/// 检测当前系统代理 / 抓包软件环境（Charles / Fiddler / mitmproxy / Stream 等）。
-/// 一旦 HTTP/HTTPS Proxy 开启或检测到 SSL Kill Switch 类 dylib 即返回 YES。
-+ (BOOL)isProxyOrCapturingDetected:(NSString * _Nullable * _Nullable)reason;
-
-/// 即刻离场：用于检测到抓包 / 被动态分析时立刻退出进程
-/// （非优雅退出，对不同 iOS 版本多重兼容路径，不走正常 UIAlert）。
-+ (void)selfDestructReason:(NSString *)reason;
+/// 检测是否存在 VPN 连接（防抓包：检测到 VPN/代理则返回 YES）
++ (BOOL)isVPNConnected;
 
 @end
 

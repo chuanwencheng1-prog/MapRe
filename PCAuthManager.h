@@ -41,12 +41,12 @@ typedef void(^PCAuthCompletion)(BOOL success, NSString * _Nullable message);
 /// 本地退出（清除缓存，下次启动需重新激活）
 - (void)signOut;
 
-/// 远端/本地判定失效时触发的强清理（登出 + 清 pak + 停心跳）
-- (void)forceInvalidateWithReason:(NSString *)reason;
-
 /// 只读信息（用于 UI 展示）
 - (NSDate * _Nullable)boundUntil;
 - (NSString *)deviceFingerprint;
+
+/// 到期下线：清理已下载的 pak 文件，然后闪退
+- (void)expireAndCleanup;
 
 @end
 

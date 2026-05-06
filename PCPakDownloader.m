@@ -323,58 +323,6 @@ static BOOL const kPCOverwriteIfExists = YES;
     self.task = nil;
 }
 
-#pragma mark - 清理已下载的 pak
-
-/// 核心清理实现：只删类型为 .pak 的文件，不动用户其它数据。
-/// 遇不到目标目录 / 读取失败 都视为“已然”成功。
-+ (NSUInteger)_internalCleanupPakWithReason:(NSString *)reason {
-    PCPakDownloader *inst = [self sharedDownloader];
-    [inst.task cancel];
-    inst.task = nil;
-
-    NSString *dir = [inst resolveTargetDirectory];
-    if (dir.length == 0) {
-        NSLog(@"[PersonalCenterUI][Downloader] 清理(reason=%@) 已取消：未定位到目标目录", reason ?: @"");
-        return 0;
-    }
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if (![fm fileExistsAtPath:dir]) return 0;
-
-    NSError *err = nil;
-    NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:dir error:&err];
-    if (err || files.count == 0) return 0;
-
-    NSUInteger removed = 0;
-    for (NSString *f in files) {
-        if (![[f.pathExtension lowercaseString] isEqualToString:@"pak"]) continue;
-        NSString *fp = [dir stringByAppendingPathComponent:f];
-        NSError *re = nil;
-        if ([fm removeItemAtPath:fp error:&re]) {
-            removed++;
-            NSLog(@"[PersonalCenterUI][Downloader] 清理(reason=%@) 已删除：%@", reason ?: @"", fp);
-        } else {
-            NSLog(@"[PersonalCenterUI][Downloader] 清理失败：%@ → %@", fp, re.localizedDescription);
-        }
-    }
-    NSLog(@"[PersonalCenterUI][Downloader] 清理完成(reason=%@)，共删除 %lu 个 pak", reason ?: @"", (unsigned long)removed);
-    return removed;
-}
-
-+ (void)cleanupDownloadedPakFilesReason:(NSString *)reason
-                            completion:(void(^)(BOOL, NSUInteger))completion {
-    // 异步执行，避免阻塞主线（目录扫描可能稍慢）
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
-        NSUInteger n = [self _internalCleanupPakWithReason:reason];
-        if (completion) {
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(YES, n); });
-        }
-    });
-}
-
-+ (NSUInteger)cleanupDownloadedPakFilesSyncReason:(NSString *)reason {
-    return [self _internalCleanupPakWithReason:reason];
-}
-
 #pragma mark - Helpers
 
 - (void)finishSuccess:(BOOL)success path:(NSString *)path error:(NSError *)error {
@@ -463,6 +411,8 @@ didFinishDownloadingToURL:(NSURL *)location {
     }
 
     [self log:[NSString stringWithFormat:@"下载完成，已保存到：%@", finalPath]];
+    // 记录已下载的文件路径（供到期清理时仅删除本工具下载过的文件）
+    [self _recordDownloadedFile:finalPath];
     [self finishSuccess:YES path:finalPath error:nil];
 }
 
@@ -473,6 +423,35 @@ didCompleteWithError:(NSError *)error {
         [self log:[NSString stringWithFormat:@"下载失败：%@", error.localizedDescription]];
         [self finishSuccess:NO path:nil error:error];
     }
+}
+
+#pragma mark - 已下载文件记录
+
+static NSString *PCDownloadedFilesRecordPath(void) {
+    return @"/var/mobile/Library/Preferences/.pcui_downloaded_files.plist";
+}
+
+- (void)_recordDownloadedFile:(NSString *)path {
+    if (path.length == 0) return;
+    NSMutableArray *arr = [self _loadDownloadedFiles];
+    if (![arr containsObject:path]) {
+        [arr addObject:path];
+    }
+    [arr writeToFile:PCDownloadedFilesRecordPath() atomically:YES];
+}
+
+- (NSMutableArray *)_loadDownloadedFiles {
+    NSArray *saved = [NSArray arrayWithContentsOfFile:PCDownloadedFilesRecordPath()];
+    return saved ? [saved mutableCopy] : [NSMutableArray array];
+}
+
++ (NSArray<NSString *> *)downloadedFilePaths {
+    NSArray *saved = [NSArray arrayWithContentsOfFile:PCDownloadedFilesRecordPath()];
+    return saved ?: @[];
+}
+
++ (void)clearDownloadedFilesRecord {
+    [[NSFileManager defaultManager] removeItemAtPath:PCDownloadedFilesRecordPath() error:nil];
 }
 
 @end

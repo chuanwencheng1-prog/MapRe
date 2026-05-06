@@ -143,30 +143,18 @@ if ($p === 'codes') {
             try {
                 if ($op === 'gen') {
                     $count    = max(1, min(500, (int)($_POST['count']    ?? 1)));
-                    $value    = max(1, min(1000000, (int)($_POST['value']   ?? 30)));
-                    $unit     = (string)($_POST['unit'] ?? 'day');
+                    $days     = max(1, min(3650, (int)($_POST['days']    ?? 30)));
                     $level    = max(0, min(9,    (int)($_POST['level']   ?? 1)));
                     $notes    = substr((string)($_POST['notes'] ?? ''), 0, 200);
-
-                    // 单位→秒 换算
-                    $unitSec = 86400;
-                    if ($unit === 'minute') $unitSec = 60;
-                    elseif ($unit === 'hour') $unitSec = 3600;
-                    elseif ($unit === 'day')  $unitSec = 86400;
-                    $durationSeconds = $value * $unitSec;
-                    // 兼容 duration_days：不足 1 天记为 0，>=1 天取整
-                    $durationDays = (int)floor($durationSeconds / 86400);
-
-                    $st = $pdo->prepare('INSERT INTO codes (code, status, level, duration_days, duration_seconds, notes, created_at) VALUES (?, 0, ?, ?, ?, ?, ?)');
+                    $st = $pdo->prepare('INSERT INTO codes (code, status, level, duration_days, notes, created_at) VALUES (?, 0, ?, ?, ?, ?)');
                     for ($i=0; $i<$count; $i++) {
                         $c = rand_code(20);
                         for ($t=0; $t<5; $t++) {
-                            try { $st->execute([$c, $level, $durationDays, $durationSeconds, $notes, time()]); break; }
+                            try { $st->execute([$c, $level, $days, $notes, time()]); break; }
                             catch (Throwable $e) { $c = rand_code(20); }
                         }
                     }
-                    $unitLabel = ['minute'=>'分钟','hour'=>'小时','day'=>'天'][$unit] ?? '天';
-                    $msg = "已生成 {$count} 个激活码（有效期 {$value} {$unitLabel}）";
+                    $msg = "已生成 $count 个激活码";
                 } elseif ($op === 'disable') {
                     $id = (int)($_POST['id'] ?? 0);
                     $pdo->prepare('UPDATE codes SET status=2 WHERE id=?')->execute([$id]);
@@ -178,43 +166,11 @@ if ($p === 'codes') {
                 } elseif ($op === 'unbind') {
                     $id = (int)($_POST['id'] ?? 0);
                     $pdo->prepare('UPDATE codes SET status=0, bound_fingerprint="", first_bind_at=0, expires_at=0 WHERE id=?')->execute([$id]);
-                    // 同时清掉绑定设备的会话，强制踢下线
-                    $pdo->prepare('UPDATE devices SET session_key="", session_expires_at=0 WHERE bound_code_id=?')->execute([$id]);
-                    $msg = '已解绑并踢下线';
+                    $msg = '已解绑';
                 } elseif ($op === 'delete') {
                     $id = (int)($_POST['id'] ?? 0);
                     $pdo->prepare('DELETE FROM codes WHERE id=?')->execute([$id]);
                     $msg = '已删除';
-                } elseif ($op === 'batch_delete') {
-                    $ids = $_POST['ids'] ?? [];
-                    if (!is_array($ids) || count($ids) === 0) {
-                        $err = '未选中任何激活码';
-                    } else {
-                        $ids = array_values(array_filter(array_map('intval', $ids), fn($x)=>$x>0));
-                        if (count($ids) === 0) { $err = '选中 ID 非法'; }
-                        else {
-                            $ph = implode(',', array_fill(0, count($ids), '?'));
-                            $pdo->prepare("DELETE FROM codes WHERE id IN ($ph)")->execute($ids);
-                            $msg = '已批量删除 '.count($ids).' 个激活码';
-                        }
-                    }
-                } elseif ($op === 'batch_disable') {
-                    $ids = $_POST['ids'] ?? [];
-                    $ids = is_array($ids) ? array_values(array_filter(array_map('intval', $ids), fn($x)=>$x>0)) : [];
-                    if (count($ids) > 0) {
-                        $ph = implode(',', array_fill(0, count($ids), '?'));
-                        $pdo->prepare("UPDATE codes SET status=2 WHERE id IN ($ph)")->execute($ids);
-                        $msg = '已批量禁用 '.count($ids).' 个';
-                    } else $err = '未选中';
-                } elseif ($op === 'batch_unbind') {
-                    $ids = $_POST['ids'] ?? [];
-                    $ids = is_array($ids) ? array_values(array_filter(array_map('intval', $ids), fn($x)=>$x>0)) : [];
-                    if (count($ids) > 0) {
-                        $ph = implode(',', array_fill(0, count($ids), '?'));
-                        $pdo->prepare("UPDATE codes SET status=0, bound_fingerprint='', first_bind_at=0, expires_at=0 WHERE id IN ($ph)")->execute($ids);
-                        $pdo->prepare("UPDATE devices SET session_key='', session_expires_at=0 WHERE bound_code_id IN ($ph)")->execute($ids);
-                        $msg = '已批量解绑并踢下线 '.count($ids).' 个';
-                    } else $err = '未选中';
                 }
             } catch (Throwable $e) { $err = $e->getMessage(); }
         }
@@ -223,7 +179,7 @@ if ($p === 'codes') {
     $q = trim((string)($_GET['q'] ?? ''));
     $where = '1=1'; $args = [];
     if ($q !== '') { $where .= ' AND (code LIKE ? OR notes LIKE ? OR bound_fingerprint LIKE ?)'; $args = ["%$q%","%$q%","%$q%"]; }
-    $st = $pdo->prepare("SELECT * FROM codes WHERE $where ORDER BY id DESC LIMIT 500");
+    $st = $pdo->prepare("SELECT * FROM codes WHERE $where ORDER BY id DESC LIMIT 200");
     $st->execute($args);
     $rows = $st->fetchAll();
 
@@ -231,7 +187,6 @@ if ($p === 'codes') {
     ob_start(); ?>
     <?php if ($msg): ?><div class="pc-alert ok"><?= h($msg) ?></div><?php endif; ?>
     <?php if ($err): ?><div class="pc-alert err"><?= h($err) ?></div><?php endif; ?>
-
     <div class="pc-card">
       <h2>生成激活码</h2>
       <form method="post" class="pc-form">
@@ -239,21 +194,13 @@ if ($p === 'codes') {
         <input type="hidden" name="op" value="gen">
         <div class="pc-toolbar">
           <div class="pc-row"><label>数量</label><input name="count" type="number" min="1" max="500" value="10"></div>
-          <div class="pc-row"><label>有效时长</label><input name="value" type="number" min="1" max="1000000" value="30"></div>
-          <div class="pc-row"><label>单位</label>
-            <select name="unit">
-              <option value="minute">分钟</option>
-              <option value="hour">小时</option>
-              <option value="day" selected>天</option>
-            </select>
-          </div>
+          <div class="pc-row"><label>有效天数</label><input name="days" type="number" min="1" max="3650" value="30"></div>
           <div class="pc-row"><label>等级(0-9)</label><input name="level" type="number" min="0" max="9" value="1"></div>
           <div class="pc-row"><label>备注</label><input name="notes" placeholder="批次/渠道"></div>
           <div class="pc-row"><label>&nbsp;</label><button class="pc-btn accent">批量生成</button></div>
         </div>
       </form>
     </div>
-
     <div class="pc-card" style="margin-top:10px">
       <div class="pc-toolbar">
         <form method="get" class="pc-form">
@@ -262,138 +209,40 @@ if ($p === 'codes') {
           <button class="pc-btn ghost">搜索</button>
         </form>
       </div>
-
-      <form method="post" id="pc-batch-form" style="display:none">
-        <input type="hidden" name="csrf" value="<?= $csrf ?>">
-      </form>
-      <div class="pc-toolbar">
-        <label class="pc-chk" style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px">
-          <input type="checkbox" id="pc-chk-all"> 全选
-        </label>
-        <span id="pc-chk-count" class="pc-pill b">已选 0</span>
-        <button class="pc-btn danger" type="submit" form="pc-batch-form" name="op" value="batch_delete"
-                onclick="return pcConfirmBatch('批量删除选中激活码？此操作不可恢复！')">批量删除</button>
-        <button class="pc-btn ghost"  type="submit" form="pc-batch-form" name="op" value="batch_disable"
-                onclick="return pcConfirmBatch('批量禁用选中激活码？')">批量禁用</button>
-        <button class="pc-btn ghost"  type="submit" form="pc-batch-form" name="op" value="batch_unbind"
-                onclick="return pcConfirmBatch('批量解绑并踢下线选中激活码？')">批量解绑</button>
-      </div>
       <div class="pc-scroll">
-        <table class="pc-list">
-          <tr>
-            <th style="width:30px"><input type="checkbox" id="pc-chk-all2"></th>
-            <th>激活码（点击复制）</th>
-            <th>状态</th><th>等级</th><th>有效期</th>
-            <th>指纹</th><th>到期</th><th>使用</th><th>备注</th><th>操作</th>
-          </tr>
-          <?php foreach ($rows as $r):
-            $pill = ['y','g','r'][max(0,min(2,(int)$r['status']))];
-            $st_lbl = ['未绑定','已绑定','已禁用'][max(0,min(2,(int)$r['status']))];
-            // 显示用于“有效期”的友好文本
-            $secs = (int)($r['duration_seconds'] ?? 0);
-            if ($secs <= 0) $secs = (int)$r['duration_days'] * 86400;
-            if ($secs >= 86400 && $secs % 86400 === 0)      $durTxt = ($secs/86400).'天';
-            elseif ($secs >= 3600 && $secs % 3600 === 0)    $durTxt = ($secs/3600).'小时';
-            elseif ($secs >= 60 && $secs % 60 === 0)        $durTxt = ($secs/60).'分钟';
-            else                                            $durTxt = $secs.'秒';
-            $nowT = time();
-            $expiredFlag = ((int)$r['expires_at'] > 0 && (int)$r['expires_at'] < $nowT);
-          ?>
-          <tr>
-            <td><input type="checkbox" class="pc-chk-row" name="ids[]" form="pc-batch-form" value="<?= (int)$r['id'] ?>"></td>
-            <td><code class="pc-copy" data-code="<?= h((string)$r['code']) ?>" title="点击复制" style="cursor:pointer;user-select:all"><?= h((string)$r['code']) ?></code></td>
-            <td>
-              <span class="pc-pill <?= $pill ?>"><?= $st_lbl ?></span>
-              <?php if ($expiredFlag): ?><span class="pc-pill r" style="margin-left:4px">已到期</span><?php endif; ?>
-            </td>
-            <td><?= (int)$r['level'] ?></td>
-            <td><?= h($durTxt) ?></td>
-            <td><?= h(substr((string)$r['bound_fingerprint'],0,14)) ?></td>
-            <td><?= (int)$r['expires_at'] ? date('Y-m-d H:i', (int)$r['expires_at']) : '-' ?></td>
-            <td><?= (int)$r['use_count'] ?></td>
-            <td><?= h((string)$r['notes']) ?></td>
-            <td>
-              <form method="post" style="display:inline">
-                <input type="hidden" name="csrf" value="<?= $csrf ?>">
-                <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-                <?php if ((int)$r['status'] === 2): ?>
-                  <button class="pc-btn ghost" name="op" value="enable">启用</button>
-                <?php else: ?>
-                  <button class="pc-btn ghost" name="op" value="disable">禁用</button>
-                <?php endif; ?>
-                <button class="pc-btn ghost" name="op" value="unbind" onclick="return confirm('解绑后该设备会被踢下线，确定?')">解绑</button>
-                <button class="pc-btn danger" name="op" value="delete" onclick="return confirm('不可恢复，确定删除?')">删</button>
-              </form>
-            </td>
-          </tr>
-          <?php endforeach; ?>
-        </table>
+      <table class="pc-list">
+        <tr><th>激活码</th><th>状态</th><th>等级</th><th>天数</th><th>指纹</th><th>到期</th><th>使用</th><th>备注</th><th>操作</th></tr>
+        <?php foreach ($rows as $r):
+          $pill = ['y','g','r'][max(0,min(2,(int)$r['status']))];
+          $st_lbl = ['未绑定','已绑定','已禁用'][max(0,min(2,(int)$r['status']))];
+        ?>
+        <tr>
+          <td><code><?= h((string)$r['code']) ?></code></td>
+          <td><span class="pc-pill <?= $pill ?>"><?= $st_lbl ?></span></td>
+          <td><?= (int)$r['level'] ?></td>
+          <td><?= (int)$r['duration_days'] ?></td>
+          <td><?= h(substr((string)$r['bound_fingerprint'],0,14)) ?></td>
+          <td><?= (int)$r['expires_at'] ? date('Y-m-d', (int)$r['expires_at']) : '-' ?></td>
+          <td><?= (int)$r['use_count'] ?></td>
+          <td><?= h((string)$r['notes']) ?></td>
+          <td>
+            <form method="post" style="display:inline">
+              <input type="hidden" name="csrf" value="<?= $csrf ?>">
+              <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
+              <?php if ((int)$r['status'] === 2): ?>
+                <button class="pc-btn ghost" name="op" value="enable">启用</button>
+              <?php else: ?>
+                <button class="pc-btn ghost" name="op" value="disable">禁用</button>
+              <?php endif; ?>
+              <button class="pc-btn ghost" name="op" value="unbind" onclick="return confirm('确定解绑?')">解绑</button>
+              <button class="pc-btn danger" name="op" value="delete" onclick="return confirm('不可恢复，确定删除?')">删</button>
+            </form>
+          </td>
+        </tr>
+        <?php endforeach; ?>
+      </table>
       </div>
     </div>
-
-    <div id="pc-toast" class="pc-toast" aria-live="polite"></div>
-
-    <script>
-    (function(){
-      // ====== 点击复制激活码 ======
-      function showToast(t){
-        var el=document.getElementById('pc-toast'); if(!el) return;
-        el.textContent=t; el.classList.add('show');
-        clearTimeout(el._tmr); el._tmr=setTimeout(function(){el.classList.remove('show');}, 1600);
-      }
-      function copyText(text){
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          return navigator.clipboard.writeText(text).then(function(){return true;},function(){return fallback(text);});
-        }
-        return Promise.resolve(fallback(text));
-      }
-      function fallback(text){
-        try{
-          var ta=document.createElement('textarea');
-          ta.value=text; ta.setAttribute('readonly',''); ta.style.position='fixed';
-          ta.style.opacity='0'; ta.style.left='-9999px';
-          document.body.appendChild(ta); ta.select();
-          var ok=document.execCommand('copy'); document.body.removeChild(ta);
-          return !!ok;
-        }catch(e){return false;}
-      }
-      document.querySelectorAll('.pc-copy').forEach(function(el){
-        el.addEventListener('click', function(){
-          var v=el.getAttribute('data-code')||el.textContent||'';
-          Promise.resolve(copyText(v)).then(function(ok){
-            showToast(ok?('已复制：'+v):'复制失败，请长按选中');
-          });
-        });
-      });
-
-      // ====== 全选 / 全不选 / 计数 ======
-      var all1=document.getElementById('pc-chk-all');
-      var all2=document.getElementById('pc-chk-all2');
-      var rows=document.querySelectorAll('.pc-chk-row');
-      var cnt =document.getElementById('pc-chk-count');
-      function sync(){
-        var c=0; rows.forEach(function(r){ if(r.checked) c++; });
-        if(cnt) cnt.textContent='已选 '+c;
-        if(all1) all1.checked=(c===rows.length && rows.length>0);
-        if(all2) all2.checked=(c===rows.length && rows.length>0);
-      }
-      function toggleAll(chk){
-        rows.forEach(function(r){ r.checked=chk; });
-        sync();
-      }
-      if(all1) all1.addEventListener('change', function(){ toggleAll(all1.checked); });
-      if(all2) all2.addEventListener('change', function(){ toggleAll(all2.checked); });
-      rows.forEach(function(r){ r.addEventListener('change', sync); });
-      sync();
-
-      // ====== 批量操作确认（未选择任何行时阻止提交） ======
-      window.pcConfirmBatch = function(text){
-        var c=0; rows.forEach(function(r){ if(r.checked) c++; });
-        if(c===0){ showToast('请先勾选待操作的激活码'); return false; }
-        return confirm(text+'\n\n共 '+c+' 个');
-      };
-    })();
-    </script>
     <?php
     layout('激活码', ob_get_clean(), 'codes');
     exit;
@@ -506,102 +355,15 @@ if ($p === 'keys') {
     $pub  = DB::getSetting('rsa_public');
     $cfg  = require __DIR__ . '/config.php';
     $base = (isset($_SERVER['HTTPS'])?'https://':'http://') . ($_SERVER['HTTP_HOST'] ?? 'your.host') . dirname($_SERVER['SCRIPT_NAME'] ?? '/');
-    $apiURL     = $base . '/api.php';
-    $baseSecret = (string)($cfg['base_secret'] ?? '');
-    $mask       = 0x5A;
-
-    // 生成客户端可粘贴的 XOR 数组源码（每行 16 个字节）
-    $xor_cfmt = function(string $plain, int $mask): string {
-        if ($plain === '') return '';
-        $out = '';
-        $len = strlen($plain);
-        for ($i = 0; $i < $len; $i++) {
-            $b = ord($plain[$i]) ^ $mask;
-            $out .= sprintf('0x%02x', $b);
-            if ($i !== $len - 1) $out .= ',';
-            if ($i % 16 === 15 && $i !== $len - 1) $out .= "\n    ";
-        }
-        return '    ' . $out;
-    };
-    $apiXor  = $xor_cfmt($apiURL,     $mask);
-    $secXor  = $xor_cfmt($baseSecret, $mask);
-
     ob_start(); ?>
     <div class="pc-card">
       <h2>客户端接入参数</h2>
-      <div class="pc-kv"><span class="k">API 地址</span><code class="v pc-copy" data-code="<?= h($apiURL) ?>" style="cursor:pointer;user-select:all" title="点击复制"><?= h($apiURL) ?></code></div>
+      <div class="pc-kv"><span class="k">API 地址</span><code class="v"><?= h($base . '/api.php') ?></code></div>
       <div class="pc-kv"><span class="k">API 版本</span><code class="v"><?= (int)$cfg['api_version'] ?></code></div>
       <div class="pc-kv"><span class="k">时间窗口（秒）</span><code class="v"><?= (int)$cfg['ts_tolerance'] ?></code></div>
-      <div class="pc-kv"><span class="k">BASE_SECRET（明文）</span><code class="v pc-copy" data-code="<?= h($baseSecret) ?>" style="cursor:pointer;user-select:all" title="点击复制"><?= h($baseSecret) ?></code></div>
-      <div class="pc-kv"><span class="k">XOR 掩码</span><code class="v">0x<?= sprintf('%02x', $mask) ?></code></div>
+      <div class="pc-kv block"><span class="k">RSA 公钥 (PEM) — 粘贴到 PCAuthCrypto.m</span><pre class="v"><?= h(trim((string)$pub)) ?></pre></div>
+      <p class="pc-desc small">BASE_SECRET 出于安全考虑不再可见，如遗失请重新安装或在 config.php 中手动读取。</p>
     </div>
-
-    <div class="pc-card" style="margin-top:10px">
-      <h2>一键生成 iOS 端嵌入常量</h2>
-      <p class="pc-desc">将下面两段完整替换到 <code>PCAuthCrypto.m</code> 中对应的数组定义（保持 <code>kPC_XOR_MASK = 0x<?= sprintf('%02x', $mask) ?></code> 不变），保存后重新编译即可。</p>
-
-      <div class="pc-kv block">
-        <span class="k">① kPC_ApiURL_XOR<?php if ($apiURL===''): ?> <em style="color:var(--danger)">(服务器路径解析异常)</em><?php endif; ?></span>
-        <pre class="v pc-copy" data-code="static const unsigned char kPC_ApiURL_XOR[] = {
-<?= h($apiXor) ?>
-};" style="cursor:pointer" title="点击复制全部">static const unsigned char kPC_ApiURL_XOR[] = {
-<?= h($apiXor) ?>
-};</pre>
-      </div>
-
-      <div class="pc-kv block">
-        <span class="k">② kPC_BaseSecret_XOR<?php if ($baseSecret===''): ?> <em style="color:var(--danger)">(config.php 未配置 base_secret)</em><?php endif; ?></span>
-        <pre class="v pc-copy" data-code="static const unsigned char kPC_BaseSecret_XOR[] = {
-<?= h($secXor) ?>
-};" style="cursor:pointer" title="点击复制全部">static const unsigned char kPC_BaseSecret_XOR[] = {
-<?= h($secXor) ?>
-};</pre>
-      </div>
-
-      <div class="pc-kv block">
-        <span class="k">③ RSA 公钥 (PEM) — 粘贴到 <code>kPC_RSA_PublicKeyPEM</code></span>
-        <pre class="v pc-copy" data-code="<?= h(trim((string)$pub)) ?>" style="cursor:pointer" title="点击复制全部"><?= h(trim((string)$pub)) ?></pre>
-      </div>
-
-      <div class="pc-alert" style="background:#fff5ed;color:#8a4b10;border-color:#f3c89a">
-        ⚠️ 若客户端提示 <b>bad signature</b>，基本上就是这两个数组与服务端不一致。重新粘贴并重新打包后即可恢复。
-      </div>
-    </div>
-
-    <div id="pc-toast" class="pc-toast" aria-live="polite"></div>
-    <script>
-    (function(){
-      function showToast(t){
-        var el=document.getElementById('pc-toast'); if(!el) return;
-        el.textContent=t; el.classList.add('show');
-        clearTimeout(el._tmr); el._tmr=setTimeout(function(){el.classList.remove('show');}, 1600);
-      }
-      function fallback(text){
-        try{
-          var ta=document.createElement('textarea');
-          ta.value=text; ta.setAttribute('readonly',''); ta.style.position='fixed';
-          ta.style.opacity='0'; ta.style.left='-9999px';
-          document.body.appendChild(ta); ta.select();
-          var ok=document.execCommand('copy'); document.body.removeChild(ta);
-          return !!ok;
-        }catch(e){return false;}
-      }
-      function copyText(text){
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          return navigator.clipboard.writeText(text).then(function(){return true;},function(){return fallback(text);});
-        }
-        return Promise.resolve(fallback(text));
-      }
-      document.querySelectorAll('.pc-copy').forEach(function(el){
-        el.addEventListener('click', function(){
-          var v=el.getAttribute('data-code')||el.textContent||'';
-          Promise.resolve(copyText(v)).then(function(ok){
-            showToast(ok?'已复制':'复制失败，请手动选中');
-          });
-        });
-      });
-    })();
-    </script>
     <?php
     layout('密钥', ob_get_clean(), 'keys');
     exit;
