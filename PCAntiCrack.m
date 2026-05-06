@@ -88,12 +88,9 @@ typedef int (*ptrace_ptr_t)(int _request, pid_t _pid, caddr_t _addr, int _data);
     if ([self _hasSuspiciousDylib:&r])          { if (reason) *reason = r ?: @"dylib"; return NO; }
     if ([self _hasEnvDebug])                    { if (reason) *reason = @"dyld_env";   return NO; }
     if (![self checkRSAKeyIntegrity])           { if (reason) *reason = @"rsa_tamper"; return NO; }
-    // 防抓包检测（参照 778.ipa 分析报告：VPN 接口 + 系统代理检测）
-    NSString *captureReason = nil;
-    if ([self isPacketCaptureEnvironment:&captureReason]) {
-        if (reason) *reason = captureReason ?: @"packet_capture";
-        return NO;
-    }
+    // 注：防抓包检测（VPN 接口 + 系统代理）不在此处拦截 UI 显示，
+    //     仅在网络请求层（PCAuthManager._request:）中拦截敏感流量。
+    //     原因：越狱设备常有 VPN/代理工具运行，若在此拦截会导致 UI 完全不显示。
     return YES;
 }
 
