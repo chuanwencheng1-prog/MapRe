@@ -52,6 +52,8 @@ static NSString *PCDeviceModel(void) {
         // 初始化 SSL Pinning 会话
         NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
         cfg.TLSMinimumSupportedProtocolVersion = tls_protocol_version_TLSv12;
+        // ★ 防抓包：绕过系统代理，Charles/Proxyman/mitmproxy/Burp 拦不到 ★
+        cfg.connectionProxyDictionary = @{};
         _pinnedSession = [NSURLSession sessionWithConfiguration:cfg delegate:self delegateQueue:nil];
     }
     return self;
@@ -139,13 +141,6 @@ static NSString *PCDeviceModel(void) {
 
 - (void)heartbeat {
     if (![self isActivated]) return;
-    // 定时复检防抓包环境（参照 778.ipa 报告第 7 项：定时自动验证）
-    // 用户可能在 App 启动后才开启 VPN/代理抦截，此处周期性检测。
-    NSString *captureReason = nil;
-    if ([PCAntiCrack isPacketCaptureEnvironment:&captureReason]) {
-        NSLog(@"[PersonalCenterUI] 心跳期间检测到抓包环境：%@，拒绝发送请求", captureReason);
-        return;  // 检测到抓包环境，不发送心跳请求（防止流量被抦截）
-    }
     [self _request:@"heartbeat" payload:@{@"ver": [self _clientVer]} completion:^(BOOL ok, NSDictionary *r, NSString *msg) {
         if (!ok) { [self signOut]; }
         else {
@@ -250,13 +245,6 @@ static NSString *PCDeviceModel(void) {
 
 - (void)_request:(NSString *)act payload:(NSDictionary *)payload completion:(void(^)(BOOL ok, NSDictionary *resp, NSString *msg))completion {
     dispatch_async(_q, ^{
-        // 发请求前再次检测抓包环境（参照 778.ipa 报告：防代理抦截）
-        NSString *capReason = nil;
-        if ([PCAntiCrack isPacketCaptureEnvironment:&capReason]) {
-            if (completion) completion(NO, nil, [NSString stringWithFormat:@"网络环境异常：%@", capReason ?: @"proxy"]);
-            return;
-        }
-
         NSURL *url = [NSURL URLWithString:[PCAuthCrypto apiURL]];
         if (!url) { if (completion) completion(NO, nil, @"API 地址未配置"); return; }
 
