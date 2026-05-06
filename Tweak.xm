@@ -40,21 +40,25 @@ static void PCStartGuardTimer(void) {
                               1ull * NSEC_PER_SEC);
     dispatch_source_set_event_handler(g_pc_guard_timer, ^{
         @autoreleasepool {
+            // 注：这里命中任何一项都不得杀进程，仅做软性处理（登出 + 踢回激活页）；
+            //       旧实现直接 raise(SIGKILL) 会在 Filza(root) 下引发 SpringBoard 异常/重启。
             // 1) 反调试/反注入检测
             NSString *r = nil;
             if (![PCAntiCrack check:&r]) {
-                [PCAntiCrack selfDestructReason:r ?: @"anticrack_fail"];
+                NSLog(@"[PersonalCenterUI][guard] anticrack fail: %@", r ?: @"");
+                [[PCAuthManager sharedManager] forceInvalidateWithReason:r ?: @"anticrack"];
                 return;
             }
-            // 2) 抓包/系统代理检测
+            // 2) 抓包/系统代理检测——仅记录，不采取任何强制动作
+            //    （许多用户日常开代理上网，不应因此被阻断激活或被踢下线）
             NSString *pr = nil;
             if ([PCAntiCrack isProxyOrCapturingDetected:&pr]) {
-                [PCAntiCrack selfDestructReason:pr ?: @"proxy_detected"];
-                return;
+                NSLog(@"[PersonalCenterUI][guard] proxy warn: %@", pr ?: @"");
             }
-            // 3) RSA 公钥完整性复核（防止运行时被改后重签）
+            // 3) RSA 公钥完整性复核
             if (![PCAntiCrack checkRSAKeyIntegrity]) {
-                [PCAntiCrack selfDestructReason:@"rsa_tampered"];
+                NSLog(@"[PersonalCenterUI][guard] rsa_tampered");
+                [[PCAuthManager sharedManager] forceInvalidateWithReason:@"rsa_tampered"];
                 return;
             }
             // 4) 活跃态下检测激活过期（恶意修改本地时间后也会在下次心跳时带回服务端时间）
@@ -192,12 +196,12 @@ static void PCBootstrapGate(void) {
         BOOL safeEnv = [PCAntiCrack check:&reason];
         // RSA 公钥完整性自检
         if (safeEnv) safeEnv = [PCAntiCrack checkRSAKeyIntegrity];
-        // 启动时即做一次抓包检测，命中立即自毁
+        // 启动时的代理检测：仅记录日志，不自毁。许多用户设备常开 WiFi 代理/VPN，
+        // 旧实现在这里 raise(SIGKILL) 会导致打开 Filza 即闪退，用户感知为"插件导致关机"。
         if (safeEnv) {
             NSString *pr = nil;
             if ([PCAntiCrack isProxyOrCapturingDetected:&pr]) {
-                [PCAntiCrack selfDestructReason:pr ?: @"proxy_at_launch"];
-                return;
+                NSLog(@"[PersonalCenterUI] proxy warn at launch: %@", pr ?: @"");
             }
         }
 

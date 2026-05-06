@@ -144,10 +144,12 @@ static NSString *PCDeviceModel(void) {
 }
 
 - (void)activateWithCode:(NSString *)code completion:(PCAuthCompletion)completion {
-    NSString *reason = nil;
-    if (![PCAntiCrack check:&reason]) {
-        if (completion) completion(NO, [NSString stringWithFormat:@"环境异常：%@", reason ?: @"unknown"]);
-        return;
+    // 注：激活流程可能需要用户开代理才能访问服务器。旧实现在这里直接 `check`
+    //       将代理/调试等忽强忽弱的信号误判为"环境异常"并从源头阻断激活，导致正常
+    //       用户永远无法激活。这里改为：仅记录日志，不拦截激活请求。
+    NSString *envReason = nil;
+    if (![PCAntiCrack check:&envReason]) {
+        NSLog(@"[PCAuth] activate warn: %@", envReason ?: @"env");
     }
     code = [[code stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] uppercaseString];
     if (code.length < 8) { if (completion) completion(NO, @"激活码格式不正确"); return; }
@@ -202,24 +204,19 @@ static NSString *PCDeviceModel(void) {
 }
 
 - (void)_onAppWillResignActive {
-    // 失活（如下拉控制中心、来电）：轻量二次校验抓包，命中立即闪退
-    NSString *r = nil;
-    if ([PCAntiCrack isProxyOrCapturingDetected:&r]) {
-        [PCAntiCrack selfDestructReason:r ?: @"proxy_on_resign"];
-    }
+    // 失活（下拉控制中心、来电、系统权限弹窗、切后台等）触发非常频繁，
+    // 旧实现在这里做代理检测并自毁 → 正好覆盖"点击激活 → HTTPS 请求中"的时间窗，
+    // 叠加用户开启的代理/VPN 即命中强杀，表现为"点击激活后手机关机"。
+    // 这里一律不做任何强制动作，环境自检统一放到 heartbeat / guard timer 中做软性处理。
+    (void)self;
 }
 
 - (void)_onAppDidBecomeActive {
-    // 回到前台：重新校验环境 + 有效期
-    NSString *r = nil;
-    if ([PCAntiCrack isProxyOrCapturingDetected:&r]) {
-        [PCAntiCrack selfDestructReason:r ?: @"proxy_on_active"];
-    }
+    // 回到前台：只做有效期自检 + 主动心跳，不再触发任何进程级强杀
     if (![self isActivated]) {
         // isActivated 内部会自动触发 forceInvalidate（如果是本地过期）
         return;
     }
-    // 主动心跳一次，快速感知远端踢下线
     [self heartbeat];
 }
 

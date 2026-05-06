@@ -153,17 +153,31 @@ typedef int (*ptrace_ptr_t)(int _request, pid_t _pid, caddr_t _addr, int _data);
     return NO;
 }
 
-#pragma mark - 即刻离场
+#pragma mark - 温和退出（禁止 kill 宿主进程）
 
+// 说明：旧实现使用 raise(SIGKILL) + _exit(0) + abort() 强杀宿主进程，
+//      在 Filza(root) 等越狱宿主下极易引起 SpringBoard 异常 / 看门狗重启，
+//      用户表现为"点击激活后手机关机 / 白苹果"。
+//      现改为：仅做日志记录 + 发出失效通知，由 UI 层优雅 dismiss 回激活页。
+//      ——— 永远不得在此函数内结束进程（"kill free" 契约）。
 + (void)selfDestructReason:(NSString *)reason {
-    NSLog(@"[PersonalCenterUI][AntiCrack] self-destruct → %@", reason ?: @"");
-    // 多重兼容路径：任何一条触发即可关进程。
-    // 1) 注销自身为混淆方向
-    raise(SIGKILL);
-    // 2) 退而求其次：标准 exit
-    _exit(0);
-    // 3) 再退一步：触发非法操作（极端场景）
-    abort();
+    NSString *r = reason ?: @"unknown";
+    NSLog(@"[PersonalCenterUI][AntiCrack] soft-exit → %@", r);
+
+    static dispatch_once_t onceDedup;
+    static NSTimeInterval lastTs = 0;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    // 10s 内同类事件只派发一次，避免定时器 + 通知双触发导致 UI 抖动
+    dispatch_once(&onceDedup, ^{ lastTs = 0; });
+    if (now - lastTs < 10.0) return;
+    lastTs = now;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"PCAuthDidInvalidate"
+                                                            object:nil
+                                                          userInfo:@{ @"reason": r,
+                                                                      @"soft":   @1 }];
+    });
 }
 
 #pragma mark - RSA 公钥完整性
