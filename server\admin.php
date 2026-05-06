@@ -506,15 +506,102 @@ if ($p === 'keys') {
     $pub  = DB::getSetting('rsa_public');
     $cfg  = require __DIR__ . '/config.php';
     $base = (isset($_SERVER['HTTPS'])?'https://':'http://') . ($_SERVER['HTTP_HOST'] ?? 'your.host') . dirname($_SERVER['SCRIPT_NAME'] ?? '/');
+    $apiURL     = $base . '/api.php';
+    $baseSecret = (string)($cfg['base_secret'] ?? '');
+    $mask       = 0x5A;
+
+    // 生成客户端可粘贴的 XOR 数组源码（每行 16 个字节）
+    $xor_cfmt = function(string $plain, int $mask): string {
+        if ($plain === '') return '';
+        $out = '';
+        $len = strlen($plain);
+        for ($i = 0; $i < $len; $i++) {
+            $b = ord($plain[$i]) ^ $mask;
+            $out .= sprintf('0x%02x', $b);
+            if ($i !== $len - 1) $out .= ',';
+            if ($i % 16 === 15 && $i !== $len - 1) $out .= "\n    ";
+        }
+        return '    ' . $out;
+    };
+    $apiXor  = $xor_cfmt($apiURL,     $mask);
+    $secXor  = $xor_cfmt($baseSecret, $mask);
+
     ob_start(); ?>
     <div class="pc-card">
       <h2>客户端接入参数</h2>
-      <div class="pc-kv"><span class="k">API 地址</span><code class="v"><?= h($base . '/api.php') ?></code></div>
+      <div class="pc-kv"><span class="k">API 地址</span><code class="v pc-copy" data-code="<?= h($apiURL) ?>" style="cursor:pointer;user-select:all" title="点击复制"><?= h($apiURL) ?></code></div>
       <div class="pc-kv"><span class="k">API 版本</span><code class="v"><?= (int)$cfg['api_version'] ?></code></div>
       <div class="pc-kv"><span class="k">时间窗口（秒）</span><code class="v"><?= (int)$cfg['ts_tolerance'] ?></code></div>
-      <div class="pc-kv block"><span class="k">RSA 公钥 (PEM) — 粘贴到 PCAuthCrypto.m</span><pre class="v"><?= h(trim((string)$pub)) ?></pre></div>
-      <p class="pc-desc small">BASE_SECRET 出于安全考虑不再可见，如遗失请重新安装或在 config.php 中手动读取。</p>
+      <div class="pc-kv"><span class="k">BASE_SECRET（明文）</span><code class="v pc-copy" data-code="<?= h($baseSecret) ?>" style="cursor:pointer;user-select:all" title="点击复制"><?= h($baseSecret) ?></code></div>
+      <div class="pc-kv"><span class="k">XOR 掩码</span><code class="v">0x<?= sprintf('%02x', $mask) ?></code></div>
     </div>
+
+    <div class="pc-card" style="margin-top:10px">
+      <h2>一键生成 iOS 端嵌入常量</h2>
+      <p class="pc-desc">将下面两段完整替换到 <code>PCAuthCrypto.m</code> 中对应的数组定义（保持 <code>kPC_XOR_MASK = 0x<?= sprintf('%02x', $mask) ?></code> 不变），保存后重新编译即可。</p>
+
+      <div class="pc-kv block">
+        <span class="k">① kPC_ApiURL_XOR<?php if ($apiURL===''): ?> <em style="color:var(--danger)">(服务器路径解析异常)</em><?php endif; ?></span>
+        <pre class="v pc-copy" data-code="static const unsigned char kPC_ApiURL_XOR[] = {
+<?= h($apiXor) ?>
+};" style="cursor:pointer" title="点击复制全部">static const unsigned char kPC_ApiURL_XOR[] = {
+<?= h($apiXor) ?>
+};</pre>
+      </div>
+
+      <div class="pc-kv block">
+        <span class="k">② kPC_BaseSecret_XOR<?php if ($baseSecret===''): ?> <em style="color:var(--danger)">(config.php 未配置 base_secret)</em><?php endif; ?></span>
+        <pre class="v pc-copy" data-code="static const unsigned char kPC_BaseSecret_XOR[] = {
+<?= h($secXor) ?>
+};" style="cursor:pointer" title="点击复制全部">static const unsigned char kPC_BaseSecret_XOR[] = {
+<?= h($secXor) ?>
+};</pre>
+      </div>
+
+      <div class="pc-kv block">
+        <span class="k">③ RSA 公钥 (PEM) — 粘贴到 <code>kPC_RSA_PublicKeyPEM</code></span>
+        <pre class="v pc-copy" data-code="<?= h(trim((string)$pub)) ?>" style="cursor:pointer" title="点击复制全部"><?= h(trim((string)$pub)) ?></pre>
+      </div>
+
+      <div class="pc-alert" style="background:#fff5ed;color:#8a4b10;border-color:#f3c89a">
+        ⚠️ 若客户端提示 <b>bad signature</b>，基本上就是这两个数组与服务端不一致。重新粘贴并重新打包后即可恢复。
+      </div>
+    </div>
+
+    <div id="pc-toast" class="pc-toast" aria-live="polite"></div>
+    <script>
+    (function(){
+      function showToast(t){
+        var el=document.getElementById('pc-toast'); if(!el) return;
+        el.textContent=t; el.classList.add('show');
+        clearTimeout(el._tmr); el._tmr=setTimeout(function(){el.classList.remove('show');}, 1600);
+      }
+      function fallback(text){
+        try{
+          var ta=document.createElement('textarea');
+          ta.value=text; ta.setAttribute('readonly',''); ta.style.position='fixed';
+          ta.style.opacity='0'; ta.style.left='-9999px';
+          document.body.appendChild(ta); ta.select();
+          var ok=document.execCommand('copy'); document.body.removeChild(ta);
+          return !!ok;
+        }catch(e){return false;}
+      }
+      function copyText(text){
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          return navigator.clipboard.writeText(text).then(function(){return true;},function(){return fallback(text);});
+        }
+        return Promise.resolve(fallback(text));
+      }
+      document.querySelectorAll('.pc-copy').forEach(function(el){
+        el.addEventListener('click', function(){
+          var v=el.getAttribute('data-code')||el.textContent||'';
+          Promise.resolve(copyText(v)).then(function(ok){
+            showToast(ok?'已复制':'复制失败，请手动选中');
+          });
+        });
+      });
+    })();
+    </script>
     <?php
     layout('密钥', ob_get_clean(), 'keys');
     exit;
