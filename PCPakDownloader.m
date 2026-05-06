@@ -15,7 +15,6 @@
 //
 
 #import "PCPakDownloader.h"
-#import "PCAntiCrack.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -218,9 +217,9 @@ static BOOL const kPCOverwriteIfExists = YES;
     return nil;
 }
 
-/// 综合四种策略，返回“保存目录”（不含文件名）。
+/// 综合四种策略，返回"保存目录"（不含文件名）。
 /// 文件名一律由下载完成后的 NSURLResponse.suggestedFilename 决定，
-/// 即“服务器/系统给回来的原始文件名”，本类不做任何改写。
+/// 即"服务器/系统给回来的原始文件名"，本类不做任何改写。
 - (NSString *)resolveTargetDirectory {
     NSString *bid  = kPCTargetBundleID ?: @"";
     NSString *root = nil;
@@ -231,14 +230,12 @@ static BOOL const kPCOverwriteIfExists = YES;
     if (!root) root = [self findSandboxRootByLSApplicationWorkspaceForBundleID:bid];
     // 方法 3：宿主自身
     if (!root) root = [self findSandboxRootInHost];
-    // UUID hint 兆底
+    // UUID hint 兜底
     if (!root) root = [self findSandboxRootByUUIDHint];
 
-    // 方法 5：全部失败时，回退到宿主 App 自身 Documents 目录
-    // （非越狱环境 / 目标 App 未安装时的安全兆底，确保下载不会失败）
     if (!root) {
-        root = NSHomeDirectory();
-        [self log:[NSString stringWithFormat:@"[兆底] 所有定位方法失败，回退到宿主 HomeDirectory => %@", root]];
+        [self log:@"[定位失败] 方法 1/2/3 + UUID hint 均未能定位目标沙盒"];
+        return nil;
     }
 
     // 默认落盘到 Documents/<sub>/；如需改成 Library/Caches，
@@ -302,18 +299,6 @@ static BOOL const kPCOverwriteIfExists = YES;
     // 注：此处不再预判"文件是否已存在"——因为文件名要等下载完成、
     // 从 NSURLResponse.suggestedFilename 才能拿到。真正的覆盖判断在
     // didFinishDownloadingToURL 回调里按 kPCOverwriteIfExists 处理。
-
-    // ========== 抓包检测 ==========
-    // 下载前实时检测：系统代理 / VPN隧道 / 本地抓包端口 / 抓包进程
-    NSString *sniffReason = nil;
-    if ([PCAntiCrack isSniffingDetected:&sniffReason]) {
-        [self log:[NSString stringWithFormat:@"[安全] 检测到抓包环境（%@），拒绝下载", sniffReason]];
-        NSError *e = [NSError errorWithDomain:@"PCPakDownloader" code:-10
-            userInfo:@{NSLocalizedDescriptionKey:
-                [NSString stringWithFormat:@"网络环境异常，请关闭代理/VPN后重试"]}];
-        [self finishSuccess:NO path:nil error:e];
-        return;
-    }
 
     // 直链：本次覆盖值 优先，否则默认
     NSString *effectiveURL = [self.currentOverrideURL
@@ -436,77 +421,6 @@ didCompleteWithError:(NSError *)error {
         [self log:[NSString stringWithFormat:@"下载失败：%@", error.localizedDescription]];
         [self finishSuccess:NO path:nil error:error];
     }
-}
-
-#pragma mark - SSL Pinning（防中间人抦截 HTTPS）
-
-/// 当 NSURLSession 需要验证服务器证书时回调此方法。
-/// 此处实现两层保护：
-///   1. 实时再次检测抓包环境（代理/VPN/端口）—— 防于下载过程中开启抓包
-///   2. 检查服务器证书链中是否存在非系统信任根（检测中间人证书）
-- (void)URLSession:(NSURLSession *)session
- didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
- completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential * _Nullable))completionHandler {
-
-    // 补充检测：下载进行中再次校验抓包环境
-    if ([PCAntiCrack isSniffingDetected]) {
-        [self log:@"[安全] 下载中发现抓包环境，中断连接"];
-        completionHandler(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
-        return;
-    }
-
-    NSURLProtectionSpace *space = challenge.protectionSpace;
-    // 仅处理服务器信任评估（ServerTrust）
-    if (![space.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust]) {
-        completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
-        return;
-    }
-
-    SecTrustRef trust = space.serverTrust;
-    if (!trust) {
-        completionHandler(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
-        return;
-    }
-
-    // 标准证书链验证
-    SecTrustResultType result = kSecTrustResultInvalid;
-    OSStatus status = SecTrustEvaluate(trust, &result);
-    if (status != errSecSuccess ||
-        (result != kSecTrustResultUnspecified && result != kSecTrustResultProceed)) {
-        [self log:@"[安全] 服务器证书验证失败，疑似中间人证书"];
-        completionHandler(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
-        return;
-    }
-
-    // 检查证书链是否被中间人代理替换：
-    // 如果证书链中任何一张证书的组织名(O)包含已知抓包工具关键词，直接拒绝
-    CFIndex certCount = SecTrustGetCertificateCount(trust);
-    static NSArray<NSString *> *badIssuers = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        badIssuers = @[
-            @"Charles", @"mitmproxy", @"Fiddler", @"Burp",
-            @"Proxyman", @"MITM", @"Sniff", @"Debug Proxy",
-        ];
-    });
-    for (CFIndex i = 0; i < certCount; i++) {
-        SecCertificateRef cert = SecTrustGetCertificateAtIndex(trust, i);
-        if (!cert) continue;
-        CFStringRef summary = SecCertificateCopySubjectSummary(cert);
-        if (!summary) continue;
-        NSString *sub = (__bridge_transfer NSString *)summary;
-        for (NSString *bad in badIssuers) {
-            if ([sub rangeOfString:bad options:NSCaseInsensitiveSearch].location != NSNotFound) {
-                [self log:[NSString stringWithFormat:@"[安全] 检测到中间人证书: %@", sub]];
-                completionHandler(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
-                return;
-            }
-        }
-    }
-
-    // 证书可信，允许继续
-    NSURLCredential *cred = [NSURLCredential credentialForTrust:trust];
-    completionHandler(NSURLSessionAuthChallengeUseCredential, cred);
 }
 
 @end

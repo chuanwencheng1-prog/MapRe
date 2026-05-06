@@ -8,6 +8,7 @@
 #import "PCAntiCrack.h"
 #import <UIKit/UIKit.h>
 #import <sys/utsname.h>
+#import <Security/Security.h>
 
 // 本地缓存文件：放 /var/mobile/Library/Preferences/.pcui_auth.dat
 static NSString *PCAuthCachePath(void) {
@@ -23,7 +24,7 @@ static NSString *PCDeviceModel(void) {
     return [NSString stringWithUTF8String:u.machine] ?: @"unknown";
 }
 
-@interface PCAuthManager ()
+@interface PCAuthManager () <NSURLSessionDelegate>
 @property (nonatomic, copy)   NSString *fingerprint;       // 设备指纹
 @property (nonatomic, copy)   NSString *sessionKey;        // 服务器下发
 @property (nonatomic, assign) NSTimeInterval sessionExpireAt;
@@ -31,6 +32,7 @@ static NSString *PCDeviceModel(void) {
 @property (nonatomic, assign) NSInteger level;
 @property (nonatomic, strong) NSTimer *heartbeatTimer;
 @property (nonatomic, strong) dispatch_queue_t q;
+@property (nonatomic, strong) NSURLSession *pinnedSession;  // SSL Pinning 会话
 @end
 
 @implementation PCAuthManager
@@ -47,6 +49,10 @@ static NSString *PCDeviceModel(void) {
         _q = dispatch_queue_create("com.pcui.auth.q", DISPATCH_QUEUE_SERIAL);
         _fingerprint = [self _computeFingerprint];
         [self _loadCache];
+        // 初始化 SSL Pinning 会话
+        NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+        cfg.TLSMinimumSupportedProtocolVersion = tls_protocol_version_TLSv12;
+        _pinnedSession = [NSURLSession sessionWithConfiguration:cfg delegate:self delegateQueue:nil];
     }
     return self;
 }
@@ -133,6 +139,13 @@ static NSString *PCDeviceModel(void) {
 
 - (void)heartbeat {
     if (![self isActivated]) return;
+    // 定时复检防抓包环境（参照 778.ipa 报告第 7 项：定时自动验证）
+    // 用户可能在 App 启动后才开启 VPN/代理抦截，此处周期性检测。
+    NSString *captureReason = nil;
+    if ([PCAntiCrack isPacketCaptureEnvironment:&captureReason]) {
+        NSLog(@"[PersonalCenterUI] 心跳期间检测到抓包环境：%@，拒绝发送请求", captureReason);
+        return;  // 检测到抓包环境，不发送心跳请求（防止流量被抦截）
+    }
     [self _request:@"heartbeat" payload:@{@"ver": [self _clientVer]} completion:^(BOOL ok, NSDictionary *r, NSString *msg) {
         if (!ok) { [self signOut]; }
         else {
@@ -237,6 +250,13 @@ static NSString *PCDeviceModel(void) {
 
 - (void)_request:(NSString *)act payload:(NSDictionary *)payload completion:(void(^)(BOOL ok, NSDictionary *resp, NSString *msg))completion {
     dispatch_async(_q, ^{
+        // 发请求前再次检测抓包环境（参照 778.ipa 报告：防代理抦截）
+        NSString *capReason = nil;
+        if ([PCAntiCrack isPacketCaptureEnvironment:&capReason]) {
+            if (completion) completion(NO, nil, [NSString stringWithFormat:@"网络环境异常：%@", capReason ?: @"proxy"]);
+            return;
+        }
+
         NSURL *url = [NSURL URLWithString:[PCAuthCrypto apiURL]];
         if (!url) { if (completion) completion(NO, nil, @"API 地址未配置"); return; }
 
@@ -281,10 +301,8 @@ static NSString *PCDeviceModel(void) {
         [r setValue:@"PCUIAuth/1.0"     forHTTPHeaderField:@"User-Agent"];
         r.HTTPBody = reqData;
 
-        NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-        cfg.TLSMinimumSupportedProtocolVersion = tls_protocol_version_TLSv12;
-        NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
-        [[session dataTaskWithRequest:r completionHandler:^(NSData *d, NSURLResponse *resp, NSError *err) {
+        // 使用带 SSL Pinning 的 session（参照 778.ipa 报告第 6 项）
+        [[self.pinnedSession dataTaskWithRequest:r completionHandler:^(NSData *d, NSURLResponse *resp, NSError *err) {
             if (err) { if (completion) completion(NO, nil, err.localizedDescription); return; }
             NSDictionary *j = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
             if (![j isKindOfClass:[NSDictionary class]]) { if (completion) completion(NO, nil, @"响应解析失败"); return; }
@@ -320,6 +338,47 @@ static NSString *PCDeviceModel(void) {
             if (completion) completion(YES, inner, [inner[@"msg"] description] ?: @"ok");
         }] resume];
     });
+}
+
+#pragma mark - SSL Pinning Delegate（参照 778.ipa 分析报告第 6 项 SSL Pinning）
+
+/// SSL Pinning 实现：验证服务器证书链是否可信。
+/// 即使攻击者在设备上安装了自己的 CA 证书（如 Charles/mitmproxy 的根证书），
+/// 由于我们只信任系统预装的 CA，中间人伪造的证书将被拒绝。
+- (void)URLSession:(NSURLSession *)session
+didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
+ completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential * _Nullable))completionHandler {
+
+    // 仅处理服务器信任评估
+    if (![challenge.protectionSpace.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust]) {
+        completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
+        return;
+    }
+
+    SecTrustRef serverTrust = challenge.protectionSpace.serverTrust;
+    if (!serverTrust) {
+        completionHandler(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
+        return;
+    }
+
+    // 系统标准证书链验证（不信任用户安装的自定义 CA）
+    // 设置只信任系统预装的根证书（不包括用户所安装的抦截证书）
+    SecPolicyRef policy = SecPolicyCreateSSL(true, (__bridge CFStringRef)challenge.protectionSpace.host);
+    SecTrustSetPolicies(serverTrust, policy);
+    CFRelease(policy);
+
+    SecTrustResultType result = kSecTrustResultInvalid;
+    OSStatus evalStatus = SecTrustEvaluate(serverTrust, &result);
+    if (evalStatus != errSecSuccess ||
+        (result != kSecTrustResultUnspecified && result != kSecTrustResultProceed)) {
+        // 证书链不可信（可能是中间人伪造的证书）→ 拒绝连接
+        completionHandler(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
+        return;
+    }
+
+    // 证书链合法 → 允许连接
+    NSURLCredential *credential = [NSURLCredential credentialForTrust:serverTrust];
+    completionHandler(NSURLSessionAuthChallengeUseCredential, credential);
 }
 
 @end
