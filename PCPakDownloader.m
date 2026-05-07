@@ -15,7 +15,6 @@
 //
 
 #import "PCPakDownloader.h"
-#import "PCAntiCrack.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -106,11 +105,6 @@ static BOOL const kPCOverwriteIfExists = YES;
         NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration defaultSessionConfiguration];
         cfg.timeoutIntervalForRequest  = 30.0;
         cfg.timeoutIntervalForResource = 300.0;
-        // 防抓包（对标 778.ipa）：置空连接代理字典，尽量绕过系统 HTTP 代理
-        cfg.connectionProxyDictionary = @{};
-        if (@available(iOS 13.0, *)) {
-            cfg.TLSMinimumSupportedProtocolVersion = tls_protocol_version_TLSv12;
-        }
         // 使用显式串行队列，避免 delegate 回调在任意线程上执行
         NSOperationQueue *dq = [[NSOperationQueue alloc] init];
         dq.maxConcurrentOperationCount = 1;
@@ -274,22 +268,6 @@ static BOOL const kPCOverwriteIfExists = YES;
     self.progressBlock   = progress;
     self.completionBlock = completion;
 
-    // 防抓包前置（对标 778.ipa，不含 VPN 检测避免越狱用户误伤）：
-        //   · 系统 HTTP/HTTPS 代理
-        //   · 回环常见抓包端口 (8080/8888/8889/9090)
-        //   · 抓包 dylib (Stream/Thor/Shadowrocket/HttpCatch 等)
-    NSString *capReason = nil;
-    if ([PCAntiCrack hasSystemHTTPProxy])               capReason = @"proxy";
-    else if ([PCAntiCrack hasLoopbackProxyPort:&capReason]) {}
-    else if ([PCAntiCrack hasCaptureDylib:&capReason])      {}
-    if (capReason.length) {
-        NSError *e = [NSError errorWithDomain:@"PCPakDownloader" code:-403
-            userInfo:@{NSLocalizedDescriptionKey:
-                [NSString stringWithFormat:@"网络环境异常已拒绝下载：%@", capReason]}];
-        dispatch_async(dispatch_get_main_queue(), ^{ [self finishSuccess:NO path:nil error:e]; });
-        return;
-    }
-
     // 记录本次覆盖值（供下载 URL 选择使用）
     self.currentOverrideURL = urlString;
 
@@ -441,22 +419,6 @@ didCompleteWithError:(NSError *)error {
         [self log:[NSString stringWithFormat:@"下载失败：%@", error.localizedDescription]];
         [self finishSuccess:NO path:nil error:error];
     }
-}
-
-#pragma mark - SSL Pinning (对标 778.ipa SSL Pinning，仅系统 CA)
-
-- (void)URLSession:(NSURLSession *)session
-didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
- completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential * _Nullable))completionHandler {
-    // HTTP 直链不会调到这里；HTTPS 链路强制系统 CA 锁定
-    [PCAntiCrack handleServerTrustChallenge:challenge completionHandler:completionHandler];
-}
-
-- (void)URLSession:(NSURLSession *)session
-              task:(NSURLSessionTask *)task
-didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
- completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential * _Nullable))completionHandler {
-    [PCAntiCrack handleServerTrustChallenge:challenge completionHandler:completionHandler];
 }
 
 @end

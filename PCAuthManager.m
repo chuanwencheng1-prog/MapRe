@@ -249,14 +249,6 @@ static NSString *PCDeviceModel(void) {
         NSURL *url = [NSURL URLWithString:[PCAuthCrypto apiURL]];
         if (!url) { if (completion) completion(NO, nil, @"API 地址未配置"); return; }
 
-        // 防抓包前置拦截（对标 778.ipa）：检测到系统代理/回环抓包端口/抓包 dylib/VPN
-        // → 直接拒绝本次验证请求，但不退出进程，UI 继续可见
-        NSString *capReason = nil;
-        if ([PCAntiCrack isCaptureEnvironment:&capReason]) {
-            if (completion) completion(NO, nil, [NSString stringWithFormat:@"网络环境异常：%@", capReason ?: @"capture"]);
-            return;
-        }
-
         // shared key 判定
         NSString *shared = [act isEqualToString:@"activate"] ? [PCAuthCrypto baseSecret] : (self.sessionKey ?: @"");
         if (shared.length == 0) { if (completion) completion(NO, nil, @"会话密钥缺失"); return; }
@@ -300,9 +292,7 @@ static NSString *PCDeviceModel(void) {
 
         NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
         cfg.TLSMinimumSupportedProtocolVersion = tls_protocol_version_TLSv12;
-        // 启用 SSL Pinning（系统 CA Only）：中间人 CA（Charles/mitmproxy 用户安装的根证书）一律拒绝
-        // 同时强制空 connectionProxyDictionary，让任务尽量绕过系统代理进行 TLS 底层连接
-        NSURLSession *session = [PCAntiCrack pinnedSessionWithConfiguration:cfg];
+        NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
         [[session dataTaskWithRequest:r completionHandler:^(NSData *d, NSURLResponse *resp, NSError *err) {
             if (err) { if (completion) completion(NO, nil, err.localizedDescription); return; }
             NSDictionary *j = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
