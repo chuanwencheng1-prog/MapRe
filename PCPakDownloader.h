@@ -21,11 +21,21 @@ typedef void(^PCPakCompletionBlock)(BOOL success,
 
 + (instancetype)sharedDownloader;
 
-/// 下载并复制 pak 到自定义目标目录
+/// 下载并复制 pak 到自定义目标目录（使用 .m 顶部配置区的默认 URL；
+/// 保存文件名一律使用下载完成后系统从 HTTP 响应中解析出的原始文件名）
 /// @param title    业务标签（仅用于日志与弹窗标题，不影响下载逻辑）
 /// @param progress 下载进度回调（主线程）
 /// @param completion 完成回调（主线程）
 - (void)startDownloadWithTitle:(NSString *)title
+                      progress:(nullable PCPakProgressBlock)progress
+                    completion:(nullable PCPakCompletionBlock)completion;
+
+/// 同上，但本次下载临时覆盖直链（用于「每个确定按钮独立一条直链」）。
+/// 保存文件名仍一律使用下载完成后 NSURLResponse.suggestedFilename 的原始文件名，
+/// urlString 为 nil / 空 → 回退到 kPCPakDownloadURL。
+/// 其余逻辑（Bundle ID 扫描、落盘子目录、覆盖策略）完全一致。
+- (void)startDownloadWithTitle:(NSString *)title
+                   overrideURL:(nullable NSString *)urlString
                       progress:(nullable PCPakProgressBlock)progress
                     completion:(nullable PCPakCompletionBlock)completion;
 

@@ -29,11 +29,7 @@
 static NSString *const kPCPakDownloadURL =
     @"https://modelscope-resouces.oss-cn-zhangjiakou.aliyuncs.com/avatar%2F350ce505-1505-45d6-92fd-e1cac8dc7a9b.pak";
 
-// ─── ② 下载后保存的文件名 ────────────────────────────────────────────────────
-static NSString *const kPCPakFileName =
-    @"350ce505-1505-45d6-92fd-e1cac8dc7a9b.pak";
-
-// ─── ③ ★★ TODO：你自己程序的 Bundle ID（扫描/遍历的匹配键）★★ ────────────────
+// ─── ② ★★ TODO：你自己程序的 Bundle ID（扫描/遍历的匹配键）★★ ────────────────
 //
 //   说明：沙盒 UUID 由 iOS 随机分配（如 DA6AEC98-D732-4E82-B789-246C0687FB93），
 //         每次重装都会变，绝对路径无法预知。
@@ -50,10 +46,10 @@ static NSString *const kPCPakFileName =
 static NSString *const kPCTargetBundleID =
     @"com.tencent.tmgp.pubgmhd";   // ←—— 和平精英国服 Bundle ID（已填好）
 
-// ─── ④ 沙盒内相对子路径（相对 Documents/）──────────────────────────────────
+// ─── ③ 沙盒内相对子路径（相对 Documents/）──────────────────────────────────
 //
 //   最终文件绝对路径 =
-//       扫描定位到的沙盒根 + "/Documents/" + kPCRelativeSubPath + "/" + kPCPakFileName
+//       扫描定位到的沙盒根 + "/Documents/" + kPCRelativeSubPath + "/" + <URL末尾原文件名>
 //
 //   已按你给的示例路径预填为 ShadowTrackerExtra/Saved/Paks：
 //       /var/mobile/Containers/Data/Application/<自动扫描到的UUID>
@@ -67,7 +63,7 @@ static NSString *const kPCTargetBundleID =
 static NSString *const kPCRelativeSubPath =
     @"ShadowTrackerExtra/Saved/Paks";   // ←—— 已按你给的示例预填
 
-// ─── ⑤ 【可选】UUID 兜底 hint（扫描/LSApplicationWorkspace 都失败时才使用）─────
+// ─── ④ 【可选】UUID 兜底 hint（扫描/LSApplicationWorkspace 都失败时才使用）─────
 //
 //   正常情况下保持 @"" 即可 —— 代码会自动扫描定位 UUID。
 //   仅当你确定某台设备上目标 App 的 UUID 固定，或调试时想直接锁到某个 UUID，才填：
@@ -76,7 +72,7 @@ static NSString *const kPCRelativeSubPath =
 //
 static NSString *const kPCFallbackUUIDHint = @"";   // ←—— 可选；留空=自动扫描
 
-// ─── ⑥ 覆盖策略 ──────────────────────────────────────────────────────────────
+// ─── ⑤ 覆盖策略 ──────────────────────────────────────────────────────────────
 //   YES = 覆盖已存在同名文件；NO = 若已存在则直接跳过下载返回成功。
 static BOOL const kPCOverwriteIfExists = YES;
 
@@ -91,7 +87,8 @@ static BOOL const kPCOverwriteIfExists = YES;
 @property (nonatomic, copy)   NSString                 *currentTitle;
 @property (nonatomic, copy)   PCPakProgressBlock        progressBlock;
 @property (nonatomic, copy)   PCPakCompletionBlock      completionBlock;
-@property (nonatomic, copy)   NSString                 *resolvedFinalPath; // 本次下载的最终落盘路径
+@property (nonatomic, copy)   NSString                 *resolvedTargetDir;       // 本次下载的保存目录（不含文件名，文件名等下载完再定）
+@property (nonatomic, copy)   NSString                 *currentOverrideURL;      // 本次自定义直链（空=默认）
 @end
 
 @implementation PCPakDownloader
@@ -220,8 +217,10 @@ static BOOL const kPCOverwriteIfExists = YES;
     return nil;
 }
 
-/// 综合四种策略，返回"最终绝对文件路径"（含文件名）
-- (NSString *)resolveTargetFinalPath {
+/// 综合四种策略，返回"保存目录"（不含文件名）。
+/// 文件名一律由下载完成后的 NSURLResponse.suggestedFilename 决定，
+/// 即"服务器/系统给回来的原始文件名"，本类不做任何改写。
+- (NSString *)resolveTargetDirectory {
     NSString *bid  = kPCTargetBundleID ?: @"";
     NSString *root = nil;
 
@@ -239,7 +238,7 @@ static BOOL const kPCOverwriteIfExists = YES;
         return nil;
     }
 
-    // 默认落盘到 Documents/<sub>/<fileName>；如需改成 Library/Caches，
+    // 默认落盘到 Documents/<sub>/；如需改成 Library/Caches，
     // 修改下面 @"Documents" 即可。
     NSString *documents = [root stringByAppendingPathComponent:@"Documents"];
 
@@ -251,7 +250,7 @@ static BOOL const kPCOverwriteIfExists = YES;
     NSString *dir = sub.length > 0
         ? [documents stringByAppendingPathComponent:sub]
         : documents;
-    return [dir stringByAppendingPathComponent:kPCPakFileName];
+    return dir;
 }
 
 #pragma mark - Public
@@ -259,12 +258,25 @@ static BOOL const kPCOverwriteIfExists = YES;
 - (void)startDownloadWithTitle:(NSString *)title
                       progress:(PCPakProgressBlock)progress
                     completion:(PCPakCompletionBlock)completion {
+    [self startDownloadWithTitle:title
+                     overrideURL:nil
+                        progress:progress
+                      completion:completion];
+}
+
+- (void)startDownloadWithTitle:(NSString *)title
+                   overrideURL:(NSString *)urlString
+                      progress:(PCPakProgressBlock)progress
+                    completion:(PCPakCompletionBlock)completion {
     self.currentTitle    = title ?: @"";
     self.progressBlock   = progress;
     self.completionBlock = completion;
 
-    NSString *finalPath = [self resolveTargetFinalPath];
-    if (!finalPath) {
+    // 记录本次覆盖值（供下载 URL 选择使用）
+    self.currentOverrideURL = urlString;
+
+    NSString *targetDir = [self resolveTargetDirectory];
+    if (!targetDir) {
         NSError *e = [NSError errorWithDomain:@"PCPakDownloader" code:-2
             userInfo:@{NSLocalizedDescriptionKey:
                 [NSString stringWithFormat:@"无法定位 Bundle ID=%@ 的沙盒路径（检查 App 是否已安装 / 是否有读权限）",
@@ -272,10 +284,9 @@ static BOOL const kPCOverwriteIfExists = YES;
         [self finishSuccess:NO path:nil error:e];
         return;
     }
-    self.resolvedFinalPath = finalPath;
-    [self log:[NSString stringWithFormat:@"最终落盘路径：%@", finalPath]];
+    self.resolvedTargetDir = targetDir;
+    [self log:[NSString stringWithFormat:@"保存目录（文件名由下载完成后的原始响应决定）：%@", targetDir]];
 
-    NSString *targetDir = [finalPath stringByDeletingLastPathComponent];
     if (![[NSFileManager defaultManager] fileExistsAtPath:targetDir]) {
         NSError *mkErr = nil;
         [[NSFileManager defaultManager] createDirectoryAtPath:targetDir
@@ -285,14 +296,16 @@ static BOOL const kPCOverwriteIfExists = YES;
         if (mkErr) { [self finishSuccess:NO path:nil error:mkErr]; return; }
     }
 
-    if ([[NSFileManager defaultManager] fileExistsAtPath:finalPath] && !kPCOverwriteIfExists) {
-        [self log:@"目标文件已存在且配置为不覆盖，跳过下载。"];
-        if (progress) progress(1.0, 0, 0);
-        [self finishSuccess:YES path:finalPath error:nil];
-        return;
-    }
+    // 注：此处不再预判"文件是否已存在"——因为文件名要等下载完成、
+    // 从 NSURLResponse.suggestedFilename 才能拿到。真正的覆盖判断在
+    // didFinishDownloadingToURL 回调里按 kPCOverwriteIfExists 处理。
 
-    NSURL *url = [NSURL URLWithString:kPCPakDownloadURL];
+    // 直链：本次覆盖值 优先，否则默认
+    NSString *effectiveURL = [self.currentOverrideURL
+        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (effectiveURL.length == 0) effectiveURL = kPCPakDownloadURL;
+
+    NSURL *url = [NSURL URLWithString:effectiveURL];
     if (!url) {
         NSError *e = [NSError errorWithDomain:@"PCPakDownloader" code:-1
                                      userInfo:@{NSLocalizedDescriptionKey:@"下载 URL 无效"}];
@@ -345,19 +358,31 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
 - (void)URLSession:(NSURLSession *)session
       downloadTask:(NSURLSessionDownloadTask *)downloadTask
 didFinishDownloadingToURL:(NSURL *)location {
-    NSString *finalPath = self.resolvedFinalPath;
-    if (finalPath.length == 0) {
-        finalPath = [self resolveTargetFinalPath];
+    NSString *targetDir = self.resolvedTargetDir;
+    if (targetDir.length == 0) {
+        targetDir = [self resolveTargetDirectory];
     }
-    if (finalPath.length == 0) {
+    if (targetDir.length == 0) {
         [self finishSuccess:NO path:nil
                       error:[NSError errorWithDomain:@"PCPakDownloader" code:-3
-                                            userInfo:@{NSLocalizedDescriptionKey:@"下载完成但最终路径解析失败"}]];
+                                            userInfo:@{NSLocalizedDescriptionKey:@"下载完成但目标目录解析失败"}]];
         return;
     }
 
+    // 文件名：直接使用系统从 HTTP 响应中解析出的原始文件名（Content-Disposition
+    // 或 URL 末尾），不做任何重命名处理。万一 suggestedFilename 也为空，
+    // 退而使用系统临时下载文件的名字兜底。
+    NSString *fileName = downloadTask.response.suggestedFilename;
+    if (fileName.length == 0) fileName = location.lastPathComponent;
+    if (fileName.length == 0) {
+        [self finishSuccess:NO path:nil
+                      error:[NSError errorWithDomain:@"PCPakDownloader" code:-4
+                                            userInfo:@{NSLocalizedDescriptionKey:@"下载完成但无法取得原始文件名"}]];
+        return;
+    }
+    NSString *finalPath = [targetDir stringByAppendingPathComponent:fileName];
+
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *targetDir = [finalPath stringByDeletingLastPathComponent];
     NSError *err = nil;
 
     if (![fm fileExistsAtPath:targetDir]) {
