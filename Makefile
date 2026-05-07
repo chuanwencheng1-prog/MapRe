@@ -6,15 +6,8 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = PersonalCenterUI
 
-PersonalCenterUI_FILES      = Tweak.xm \
-                              PCMainViewController.m \
-                              PCDownloadPopView.m \
-                              PCPakDownloader.m \
-                              PCAuthCrypto.m \
-                              PCAntiCrack.m \
-                              PCAuthManager.m \
-                              PCActivationViewController.m
+PersonalCenterUI_FILES      = Tweak.xm PCMainViewController.m PCDownloadPopView.m PCPakDownloader.m
 PersonalCenterUI_CFLAGS     = -fobjc-arc -Wno-deprecated-declarations
-PersonalCenterUI_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore Security
+PersonalCenterUI_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore
 
 include $(THEOS_MAKE_PATH)/tweak.mk

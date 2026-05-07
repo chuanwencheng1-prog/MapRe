@@ -13,8 +13,6 @@
 #import "PCMainViewController.h"
 #import "PCDownloadPopView.h"
 #import "PCPakDownloader.h"
-#import "PCAuthManager.h"
-#import "PCActivationViewController.h"
 #import <objc/runtime.h>
 
 #pragma mark - Colors
@@ -144,7 +142,7 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
         btn.backgroundColor = HEX(0x00B96B);
         btn.layer.cornerRadius = 14.0;          // 足够大以圆形两端
         btn.layer.masksToBounds = YES;
-        [btn setTitle:@"执行" forState:UIControlStateNormal];
+        [btn setTitle:@"确定" forState:UIControlStateNormal];
         [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
         btn.titleLabel.font = [UIFont systemFontOfSize:12];
         btn.contentEdgeInsets = UIEdgeInsetsMake(4, 12, 4, 12);
@@ -329,7 +327,7 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
     [self.headerBar.layer addSublayer:self.headerGradient];
 
     self.headerTitle = [[UILabel alloc] init];
-    self.headerTitle.text = @"超凡";
+    self.headerTitle.text = @"个人中心 · 功能菜单";
     self.headerTitle.textColor = [UIColor whiteColor];
     self.headerTitle.font = [UIFont systemFontOfSize:18 weight:UIFontWeightSemibold];
     self.headerTitle.textAlignment = NSTextAlignmentCenter;
@@ -353,10 +351,14 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
 
     // 严格按 wy.html 顺序 & 内容
     NSArray *cfg = @[
-        @{ @"title":@"海岛地图",   @"icon":@"📋", @"color":HEX(0x1677FF),
-           @"items":@[@"海岛除草", @"海岛全除"] },
-        @{ @"title":@"上色配置",   @"icon":@"👤", @"color":HEX(0x00B96B),
-           @"items":@[@"人物上色"] },
+        @{ @"title":@"订单管理",   @"icon":@"📋", @"color":HEX(0x1677FF),
+           @"items":@[@"全部订单", @"待付款订单", @"已发货物流", @"售后退款记录"] },
+        @{ @"title":@"个人资料",   @"icon":@"👤", @"color":HEX(0x00B96B),
+           @"items":@[@"修改头像昵称", @"绑定手机号", @"实名认证", @"收货地址管理"] },
+        @{ @"title":@"系统设置",   @"icon":@"⚙️", @"color":HEX(0xFF7D00),
+           @"items":@[@"消息通知开关", @"隐私权限管理", @"清除缓存数据", @"关于当前版本"] },
+        @{ @"title":@"帮助与客服", @"icon":@"💡", @"color":HEX(0x2A3342),
+           @"items":@[@"常见问题解答", @"在线人工客服", @"意见反馈提交"] },
     ];
     __weak typeof(self) weakSelf = self;
     for (NSDictionary *c in cfg) {
@@ -444,62 +446,21 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
 
 #pragma mark - Actions
 
-/// ==========================================================================
-/// 【自定义配置区】每个二级菜单项的独立直链
-///
-///   键  = buildCards 里 cfg.items 的中文名（二级菜单文字，必须一字不差）
-///   值  = 对应直链字符串（空 / 未配 → 回退到 PCPakDownloader.m 的 kPCPakDownloadURL）
-///
-///   注：保存名一律使用下载完成后服务器/系统返回的原始文件名（NSURLResponse.suggestedFilename），不再手动配置。
-///   其它配置（Bundle ID、Paks 子目录、覆盖策略）仍在 PCPakDownloader.m 统一管理。
-/// ==========================================================================
-- (NSDictionary<NSString *, NSString *> *)subItemDownloadMap {
-    return @{
-        // ────海岛地图 ────
-        @"海岛除草":     @"https://modelscope-resouces.oss-cn-zhangjiakou.aliyuncs.com/avatar%2F4ff7550a-c7db-4e57-adc5-ad9891b13014.pak",
-        @"海岛全除":   @"https://modelscope-resouces.oss-cn-zhangjiakou.aliyuncs.com/avatar%2F7c9770d3-67b4-440d-bd46-8f788663ef75.pak",
-
-        // ────上色配置 ────
-        @"人物上色": @"https://modelscope-resouces.oss-cn-zhangjiakou.aliyuncs.com/avatar%2Fb8a6cedb-0f50-482b-83d0-4a7d13af8de2.pak",
-    };
-}
-
 - (void)handleSubItemTap:(NSString *)name {
-    // 下载前多点硬校验：未激活 → 不允许下载，直接弹激活弹窗要求重新输入激活码
-    if (![[PCAuthManager sharedManager] isActivated]) {
-        [self presentActivationGateForRetry];
-        return;
-    }
-
     NSString *title = [NSString stringWithFormat:@"正在执行：%@", name];
     [self.pop showInView:self.view title:title];
 
-    // 按二级菜单名查自定义直链；查不到 / 空 → 传 nil → 下载器回退默认值
-    NSString *mapped    = [self subItemDownloadMap][name];
-    NSString *overrideU = ([mapped isKindOfClass:[NSString class]] && mapped.length > 0) ? mapped : nil;
-
     // 真实下载 pak 到自定义路径（逻辑沿用 yy1.ipa 分析报告）
     [[PCPakDownloader sharedDownloader] startDownloadWithTitle:name
-        overrideURL:overrideU
         progress:^(double progress, int64_t received, int64_t total) {
             NSString *tip = nil;
             double p100 = progress * 100;
-            if (p100 >= 99.5)     tip = @"核心校验中...";
-            else if (p100 > 40)   tip = [NSString stringWithFormat:@"核心处理中... (%lld / %lld)",
+            if (p100 >= 99.5)     tip = @"最后校验中...";
+            else if (p100 > 40)   tip = [NSString stringWithFormat:@"拉取核心资源... (%lld / %lld)",
                                          (long long)received, (long long)total];
-            else                  tip = @"请勿退出...";
+            else                  tip = @"准备初始化...";
             [self.pop updateProgress:progress tip:tip];
         } completion:^(BOOL success, NSString * _Nullable finalPath, NSError * _Nullable error) {
-            // 完成回调再校验一次：防止下载中途激活态被服务端踢掉（心跳/异地登录）
-            if (![[PCAuthManager sharedManager] isActivated]) {
-                [self.pop updateProgress:0.0 tip:@"授权已失效，请重新激活"];
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
-                               dispatch_get_main_queue(), ^{
-                    [self.pop dismiss];
-                    [self presentActivationGateForRetry];
-                });
-                return;
-            }
             if (success) {
                 [self.pop updateProgress:1.0 tip:@"操作完成！"];
                 // 1 秒后自动关闭
@@ -512,26 +473,6 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
                 [self.pop updateProgress:0.0 tip:[NSString stringWithFormat:@"失败：%@", msg]];
             }
         }];
-}
-
-#pragma mark - 激活失效兜底
-
-/// 本机激活态已失效（本地被清 / 服务端踢下线）：弹激活弹窗要求重新输入激活码，
-/// 激活成功后自动 dismiss 激活弹窗，停留在主界面。
-- (void)presentActivationGateForRetry {
-    PCActivationViewController *vc = [[PCActivationViewController alloc] init];
-    vc.modalPresentationStyle = UIModalPresentationFullScreen;
-    __weak PCActivationViewController *weakVC = vc;
-    __weak typeof(self) weakSelf = self;
-    vc.onActivated = ^{
-        PCActivationViewController *strongVC = weakVC;
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (strongVC) {
-            [strongVC dismissViewControllerAnimated:YES completion:nil];
-        }
-        (void)strongSelf; // 激活成功后主界面已经在后面，无需额外处理
-    };
-    [self presentViewController:vc animated:YES completion:nil];
 }
 
 @end
