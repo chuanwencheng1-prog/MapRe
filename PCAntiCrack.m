@@ -24,6 +24,7 @@
 #import <dlfcn.h>
 #import <unistd.h>
 #import <fcntl.h>
+#import <errno.h>
 #import <mach-o/dyld.h>
 #import <CommonCrypto/CommonCrypto.h>
 #import <CFNetwork/CFNetwork.h>
@@ -219,7 +220,7 @@ static NSString *const kPC_ExpectedRSA_SHA256_HEX =
     int s = socket(AF_INET, SOCK_STREAM, 0);
     if (s < 0) return NO;
 
-    // 非阻塞连接，100ms 超时
+    // 非阻塞连接，严格超时 30ms（原 100ms * 4 端口 = 400ms 易堵任务队列）
     int flags = fcntl(s, F_GETFL, 0);
     fcntl(s, F_SETFL, flags | O_NONBLOCK);
 
@@ -234,7 +235,7 @@ static NSString *const kPC_ExpectedRSA_SHA256_HEX =
         ok = YES;
     } else if (errno == EINPROGRESS) {
         fd_set wset; FD_ZERO(&wset); FD_SET(s, &wset);
-        struct timeval tv = { .tv_sec = 0, .tv_usec = 100 * 1000 }; // 100ms
+        struct timeval tv = { .tv_sec = 0, .tv_usec = 30 * 1000 }; // 30ms
         if (select(s + 1, NULL, &wset, NULL, &tv) > 0 && FD_ISSET(s, &wset)) {
             int err = 0; socklen_t elen = sizeof(err);
             if (getsockopt(s, SOL_SOCKET, SO_ERROR, &err, &elen) == 0 && err == 0) {
@@ -259,32 +260,62 @@ static NSString *const kPC_ExpectedRSA_SHA256_HEX =
 
 #pragma mark - 防抓包：抓包工具 dylib 扫描
 
+// 只扫描“非系统路径”下的镜像：越狱抓包/代理工具不会被注入到 /System 或 /usr/lib 下。
+// 这样可以彻底避免 StreamingZip / StreamingUnzipService 等系统私有框架被误判。
+static BOOL PCIsSystemImagePath(NSString *p) {
+    if (p.length == 0) return YES;
+    if ([p hasPrefix:@"/System/"])             return YES;
+    if ([p hasPrefix:@"/usr/lib/"])            return YES;
+    if ([p hasPrefix:@"/usr/libexec/"])        return YES;
+    if ([p hasPrefix:@"/Library/Caches/com.apple."]) return YES;
+    if ([p hasPrefix:@"/private/preboot/"])    return YES;
+    if ([p hasPrefix:@"/private/var/db/"])     return YES;
+    return NO;
+}
+
 + (BOOL)hasCaptureDylib:(NSString **)matched {
-    static NSArray<NSString *> *bad = nil;
+    // 采用 basename 精确匹配（大小写不敏感），避免 "Stream" 误伤 StreamingZip 这类系统框架。
+    // 名单仅保留"真正具唯一性"的工具可执行文件名 / bundle 名。
+    static NSArray<NSString *> *badExactName = nil;
+    static NSArray<NSString *> *badPrefix    = nil;
     static dispatch_once_t once; dispatch_once(&once, ^{
-        bad = @[
-            // iOS 端常见抓包/代理类 App 注入内容
-            @"Stream",          // Stream（iOS 抓包）
-            @"Thor",            // Thor（iOS 抓包）
-            @"HttpCatch",       // HTTP Catcher
-            @"Shadowrocket",    // 小火箭（代理）
-            @"Surge",           // Surge（代理）
-            @"Quantumult",      // Quantumult（代理）
-            @"Loon",            // Loon（代理）
-            @"mitm",            // mitmproxy
-            @"Charles",         // Charles iOS
-            @"Proxyman",        // Proxyman
-            @"Burp",            // Burp Mobile Assistant
+        badExactName = @[
+            @"HTTPCatcher", @"Thor", @"Shadowrocket",
+            @"Surge", @"Quantumult", @"QuantumultX", @"Loon",
+            @"Proxyman", @"mitmproxy", @"Charles",
+            @"StreamApp",
+        ];
+        // basename 前缀匹配（适用于带版本号/后缀的工具 dylib，但仍要求整体名字较"专有"）
+        badPrefix = @[
+            @"FridaGadget", @"frida-agent", @"libfrida",
+            @"cycript", @"cynject",
+            @"libburp", @"BurpMobileAssistant",
         ];
     });
     uint32_t count = _dyld_image_count();
     for (uint32_t i = 0; i < count; i++) {
         const char *n = _dyld_get_image_name(i);
         if (!n) continue;
-        NSString *name = [NSString stringWithUTF8String:n];
-        for (NSString *key in bad) {
-            if ([name rangeOfString:key options:NSCaseInsensitiveSearch].location != NSNotFound) {
-                if (matched) *matched = name;
+        NSString *full = [NSString stringWithUTF8String:n];
+        if (PCIsSystemImagePath(full)) continue; // ★ 系统路径一律放行，彻底杜绝 StreamingZip 这类误伤
+        NSString *base = [full lastPathComponent];
+        // 去掉常见扩展以便精确匹配
+        NSString *noExt = base;
+        for (NSString *ext in @[@".dylib", @".framework"]) {
+            if ([noExt hasSuffix:ext]) {
+                noExt = [noExt substringToIndex:noExt.length - ext.length];
+                break;
+            }
+        }
+        for (NSString *key in badExactName) {
+            if ([noExt caseInsensitiveCompare:key] == NSOrderedSame) {
+                if (matched) *matched = base;
+                return YES;
+            }
+        }
+        for (NSString *key in badPrefix) {
+            if ([[noExt lowercaseString] hasPrefix:[key lowercaseString]]) {
+                if (matched) *matched = base;
                 return YES;
             }
         }
@@ -292,15 +323,47 @@ static NSString *const kPC_ExpectedRSA_SHA256_HEX =
     return NO;
 }
 
-#pragma mark - 防抓包聚合
+#pragma mark - 防抓包聚合（带 3 秒结果缓存，避免短时间内反复全量扫描阻塞）
 
 + (BOOL)isCaptureEnvironment:(NSString **)reason {
+    // 3 秒缓存：激活/心跳/下载短时间内可能连续触发多次检测，
+    // 缓存可避免重复 getifaddrs + 回环探测阻塞后台队列（此前曾致 watchdog respring）。
+    static NSTimeInterval lastTs = 0;
+    static BOOL           lastResult = NO;
+    static NSString      *lastReason = nil;
+    static dispatch_queue_t cacheQ;
+    static dispatch_once_t once; dispatch_once(&once, ^{
+        cacheQ = dispatch_queue_create("com.pcui.anti.cap.cache", DISPATCH_QUEUE_SERIAL);
+    });
+
+    __block BOOL hit = NO;
+    __block NSString *r = nil;
+    __block BOOL useCache = NO;
+    NSTimeInterval now = [NSDate date].timeIntervalSince1970;
+
+    dispatch_sync(cacheQ, ^{
+        if (lastTs > 0 && (now - lastTs) < 3.0) {
+            hit = lastResult; r = lastReason; useCache = YES;
+        }
+    });
+    if (useCache) {
+        if (hit && reason) *reason = r;
+        return hit;
+    }
+
     NSString *sub = nil;
-    if ([self hasSystemHTTPProxy])               { if (reason) *reason = @"proxy";          return YES; }
-    if ([self hasLoopbackProxyPort:&sub])        { if (reason) *reason = sub ?: @"loopback_proxy"; return YES; }
-    if ([self hasCaptureDylib:&sub])             { if (reason) *reason = sub ?: @"capture_dylib";  return YES; }
-    if ([self hasVPNInterface:&sub])             { if (reason) *reason = sub ?: @"vpn";     return YES; }
-    return NO;
+    if ([self hasSystemHTTPProxy])               { hit = YES; r = @"proxy"; }
+    else if ([self hasLoopbackProxyPort:&sub])   { hit = YES; r = sub ?: @"loopback_proxy"; }
+    else if ([self hasCaptureDylib:&sub])        { hit = YES; r = sub ?: @"capture_dylib"; }
+    // 注意：VPN 检测默认不计入"抓包环境"——越狱用户普遍使用 VPN，易误伤。
+    // 仍保留 hasVPNInterface: 方法，供有独立需求时单独调用。
+
+    dispatch_sync(cacheQ, ^{
+        lastTs = now; lastResult = hit; lastReason = r ? [r copy] : nil;
+    });
+
+    if (hit && reason) *reason = r;
+    return hit;
 }
 
 #pragma mark - SSL Pinning：系统 CA Only
@@ -351,23 +414,29 @@ static NSString *const kPC_ExpectedRSA_SHA256_HEX =
 }
 
 + (NSURLSession *)pinnedSessionWithConfiguration:(NSURLSessionConfiguration *)cfg {
-    if (!cfg) cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-
-    // 强制走直连：忽略系统连接代理字典（即使 hasSystemHTTPProxy 没拦也不让代理接管）
-    cfg.connectionProxyDictionary = @{};
-
-    // TLS 下限
-    if (@available(iOS 13.0, *)) {
-        cfg.TLSMinimumSupportedProtocolVersion = tls_protocol_version_TLSv12;
-    }
-
+    // 重要：NSURLSession 对 delegate 是强持有，如果不调用 invalidateAndCancel 就不会释放。
+    // 若每次请求都 new 一个 session，复按激活/心跳会累积大量驻留 session+delegate queue，
+    // iOS 资源耗尽 → Filza 被 watchdog kill → SpringBoard respring（用户观感为"手机重启"）。
+    // 因此改为单例复用：config 采用首次传入的参数初始化后不再重建。
+    static NSURLSession *pinned = nil;
     static _PCPinningDelegate *delegate = nil;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ delegate = [[_PCPinningDelegate alloc] init]; });
-
-    NSOperationQueue *q = [[NSOperationQueue alloc] init];
-    q.maxConcurrentOperationCount = 1;
-    return [NSURLSession sessionWithConfiguration:cfg delegate:delegate delegateQueue:q];
+    dispatch_once(&once, ^{
+        NSURLSessionConfiguration *c = cfg ?: [NSURLSessionConfiguration ephemeralSessionConfiguration];
+        // 强制空连接代理字典
+        c.connectionProxyDictionary = @{};
+        if (@available(iOS 13.0, *)) {
+            if (c.TLSMinimumSupportedProtocolVersion < tls_protocol_version_TLSv12) {
+                c.TLSMinimumSupportedProtocolVersion = tls_protocol_version_TLSv12;
+            }
+        }
+        delegate = [[_PCPinningDelegate alloc] init];
+        NSOperationQueue *q = [[NSOperationQueue alloc] init];
+        q.maxConcurrentOperationCount = 1;
+        q.name = @"com.pcui.pinning.queue";
+        pinned = [NSURLSession sessionWithConfiguration:c delegate:delegate delegateQueue:q];
+    });
+    return pinned;
 }
 
 @end
