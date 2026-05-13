@@ -1,36 +1,12 @@
-# =============================================================================
-#  PersonalCenterUI / 网络验证 —— Apache 安全策略
-#  作用：禁止直接访问敏感文件（配置、私钥、SQLite DB、日志、includes 源码）
-# =============================================================================
-
-Options -Indexes -MultiViews
-
-<FilesMatch "\.(sqlite|sqlite3|db|db3|log|lock|pem|key)$">
+# 禁止直接访问私钥/数据/配置目录
+<IfModule mod_authz_core.c>
+  <FilesMatch "\.(pem|lock|log)$">
     Require all denied
-</FilesMatch>
-
-<FilesMatch "^(config\.php|install\.lock)$">
-    Require all denied
-</FilesMatch>
-
-<IfModule mod_rewrite.c>
-    RewriteEngine On
-    RewriteRule ^includes/ - [F,L]
-    RewriteRule ^data/      - [F,L]
+  </FilesMatch>
 </IfModule>
-
-# 关闭 PHP 信息泄露
-<IfModule mod_php7.c>
-    php_flag expose_php Off
-</IfModule>
-<IfModule mod_php.c>
-    php_flag expose_php Off
-</IfModule>
-
-# 安全响应头
-<IfModule mod_headers.c>
-    Header set X-Content-Type-Options "nosniff"
-    Header set X-Frame-Options        "SAMEORIGIN"
-    Header set Referrer-Policy        "no-referrer"
-    Header set X-XSS-Protection       "1; mode=block"
+<IfModule !mod_authz_core.c>
+  <FilesMatch "\.(pem|lock|log)$">
+    Order allow,deny
+    Deny from all
+  </FilesMatch>
 </IfModule>

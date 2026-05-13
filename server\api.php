@@ -1,245 +1,158 @@
 <?php
 /**
- * PersonalCenterUI 网络验证 —— 验证 API 入口
+ * iOS 客户端授权 API
  *
- *  请求格式（POST application/json）：
- *    {
- *      "v":     1,
- *      "act":   "activate" | "heartbeat" | "query",
- *      "ts":    <unix seconds>,
- *      "nonce": <hex 16B>,
- *      "fp":    <device fingerprint>,
- *      "body":  base64url( AES-256-CBC( json(payload), K ) ),
- *      "iv":    base64url( iv16 ),
- *      "sig":   hex( HMAC-SHA256( v|act|ts|nonce|fp|body|iv, sharedKey ) )
- *    }
+ * 接收：POST application/json
+ *   {
+ *     "app_id": "pcui_default",
+ *     "action": "activate" | "verify",
+ *     "card":    "XXXX-XXXX-XXXX-XXXX",
+ *     "device_id":"<sha256 hex>",
+ *     "device_info": { model, sys, name, bundle },
+ *     "ts":     1710000000,
+ *     "nonce":  "<hex>"
+ *   }
  *
- *  其中：
- *    · activate  的 sharedKey/K 使用 BASE_SECRET（握手）
- *    · heartbeat/query 的 sharedKey/K 使用 devices.session_key（首次激活成功后下发）
+ * 返回：
+ *   { "code":0, "msg":"ok", "data":{ "expires_at": <ts>, "sign":"<base64>" } }
  *
- *  响应格式（成功）：
- *    {
- *      "ok":   true,
- *      "ts":   <server ts>,
- *      "body": base64url( AES( json(payload), K ) ),
- *      "iv":   base64url( iv ),
- *      "sig":  base64url( RSA-SHA256-Sign( sha256(body|iv), privateKey ) )
- *    }
+ *   sign = base64( RSA-SHA256-Sign( "app_id|device_id|card|expires_at", private_key ) )
  *
- *  失败响应（明文）：
- *    { "ok": false, "code": <errno>, "msg": "..." }
- *
- *  安全要素：
- *    ✓ 时间窗口（默认 ±300s）
- *    ✓ nonce 一次性（数据库防重放）
- *    ✓ HMAC 请求签名；RSA 响应签名（客户端内嵌公钥验签）
- *    ✓ IP 限流
- *    ✓ 设备指纹绑定卡密（首次激活即绑）
- *    ✓ 设备可被后台禁用
+ * 错误码：
+ *   1001 卡密不存在 / 格式错误
+ *   1002 卡密已被禁用
+ *   1003 卡密已过期
+ *   1004 卡密已绑定其它设备
+ *   1005 未激活（verify 时）
+ *   1006 参数错误
+ *   1007 APP_ID 不匹配
+ *   1008 请求时间戳失效（防重放）
  */
-declare(strict_types=1);
-define('PC_AUTH_ENTRY', 1);
 
-require __DIR__ . '/includes/helper.php';
-if (!config_loaded()) { json_out(['ok'=>false,'code'=>5000,'msg'=>'server not installed'], 503); }
+header('Content-Type: application/json; charset=utf-8');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type');
 
-$cfg = require __DIR__ . '/config.php';
-require __DIR__ . '/includes/db.php';
-require __DIR__ . '/includes/crypto.php';
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') exit;
 
+require_once __DIR__ . '/includes/db.php';
+require_once __DIR__ . '/includes/rsa.php';
+require_once __DIR__ . '/includes/functions.php';
+
+function api_out($code, $msg, $data = []) {
+    echo json_encode(['code'=>$code,'msg'=>$msg,'data'=>$data], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+/* ---------------- 请求解析 ---------------- */
+$raw = file_get_contents('php://input');
+$in  = json_decode($raw, true);
+if (!is_array($in)) api_out(1006, '请求格式错误');
+
+$app_id   = (string)($in['app_id']   ?? '');
+$action   = (string)($in['action']   ?? '');
+$card     = trim((string)($in['card'] ?? ''));
+$deviceId = (string)($in['device_id'] ?? '');
+$ts       = (int)($in['ts']          ?? 0);
+$nonce    = (string)($in['nonce']    ?? '');
+$devInfo  = is_array($in['device_info'] ?? null) ? $in['device_info'] : [];
+
+if (!$app_id || !$action || !$deviceId) api_out(1006, '参数缺失');
+if ($app_id !== pc_cfg('app_id'))       api_out(1007, 'APP_ID 不匹配');
+
+// 防重放（±10 分钟）
+if (abs(time() - $ts) > 600) api_out(1008, '时间戳失效');
+
+/* ---------------- 业务处理 ---------------- */
 try {
-    DB::pdo();
-} catch (Throwable $e) {
-    json_out(['ok'=>false,'code'=>5001,'msg'=>'db unavailable']);
-}
+    $db = pc_db();
 
-/* ----------------- 请求解析 ----------------- */
-$raw  = file_get_contents('php://input') ?: '';
-$req  = json_decode($raw, true);
-if (!is_array($req)) json_out(['ok'=>false,'code'=>4000,'msg'=>'bad request']);
+    // verify 动作若未传 card 认为是 1005
+    if ($action === 'verify' && !$card) api_out(1005, '未激活');
 
-$v     = (int)($req['v']     ?? 0);
-$act   = (string)($req['act']   ?? '');
-$ts    = (int)($req['ts']    ?? 0);
-$nonce = (string)($req['nonce'] ?? '');
-$fp    = (string)($req['fp']    ?? '');
-$body  = (string)($req['body']  ?? '');
-$iv    = (string)($req['iv']    ?? '');
-$sig   = (string)($req['sig']   ?? '');
+    if (!$card) api_out(1001, '卡密为空');
 
-if ($v !== (int)$cfg['api_version'])          json_out(['ok'=>false,'code'=>4010,'msg'=>'version mismatch']);
-if (!in_array($act, ['activate','heartbeat','query'], true))
-                                              json_out(['ok'=>false,'code'=>4001,'msg'=>'bad act']);
-if (!preg_match('/^[a-f0-9]{16,64}$/i', $nonce)) json_out(['ok'=>false,'code'=>4002,'msg'=>'bad nonce']);
-if (strlen($fp) < 8 || strlen($fp) > 128)      json_out(['ok'=>false,'code'=>4003,'msg'=>'bad fp']);
-if (!rate_limit($act, 60))                    json_out(['ok'=>false,'code'=>4290,'msg'=>'rate limited']);
+    // 查卡密
+    $row = $db->prepare("SELECT * FROM ".pc_t('cards')." WHERE card_key=? LIMIT 1");
+    $row->execute([$card]);
+    $c = $row->fetch();
+    if (!$c) { pc_log('api_invalid', $card, $deviceId, 'not found'); api_out(1001, '卡密不存在'); }
 
-$drift = abs(now() - $ts);
-if ($drift > (int)$cfg['ts_tolerance'])        json_out(['ok'=>false,'code'=>4011,'msg'=>'clock drift']);
+    if ((int)$c['status'] === 2) { pc_log('api_disabled', $card, $deviceId); api_out(1002, '卡密已禁用'); }
 
-if (!nonce_consume($nonce))                    json_out(['ok'=>false,'code'=>4012,'msg'=>'replay']);
-
-/* ----------------- 签名密钥判定 ----------------- */
-$sharedKey = '';
-$device    = null;
-if ($act === 'activate') {
-    $sharedKey = (string)$cfg['base_secret'];
-} else {
-    $st = DB::pdo()->prepare('SELECT * FROM devices WHERE fingerprint = ?');
-    $st->execute([$fp]);
-    $device = $st->fetch();
-    if (!$device)                               json_out(['ok'=>false,'code'=>4040,'msg'=>'device not bound']);
-    if ((int)$device['disabled'] === 1)         json_out(['ok'=>false,'code'=>4031,'msg'=>'device disabled']);
-    if ((int)$device['session_expires_at'] < now())
-                                                json_out(['ok'=>false,'code'=>4013,'msg'=>'session expired']);
-    $sharedKey = (string)$device['session_key'];
-}
-
-/* ----------------- HMAC 校验 ----------------- */
-$canonical = "$v|$act|$ts|$nonce|$fp|$body|$iv";
-if (!Crypto::hmacVerify($canonical, $sharedKey, $sig)) {
-    DB::log($act, 'sig_fail', ['fp'=>$fp]);
-    json_out(['ok'=>false,'code'=>4030,'msg'=>'bad signature']);
-}
-
-/* ----------------- 解密 payload ----------------- */
-$plain = Crypto::aesDecrypt($body, $iv, $sharedKey);
-if ($plain === null)                           json_out(['ok'=>false,'code'=>4031,'msg'=>'decrypt fail']);
-$payload = json_decode($plain, true);
-if (!is_array($payload))                       json_out(['ok'=>false,'code'=>4032,'msg'=>'bad payload']);
-
-/* ----------------- 业务处理 ----------------- */
-$respond = function(array $data) use ($sharedKey) {
-    global $cfg;
-    $data['ts']    = now();
-    $data['ok']    = true;
-    $data['notice'] = (string)($cfg['notice'] ?? '');
-    $enc = Crypto::aesEncrypt(json_encode($data, JSON_UNESCAPED_UNICODE), $sharedKey);
-    $toSign = $enc['data'] . '|' . $enc['iv'];
-    $priv   = DB::getSetting('rsa_private');
-    $rsaSig = $priv ? Crypto::rsaSign(hash('sha256', $toSign, true), $priv) : '';
-    json_out([
-        'ok'   => true,
-        'ts'   => now(),
-        'body' => $enc['data'],
-        'iv'   => $enc['iv'],
-        'sig'  => $rsaSig,
-    ]);
-};
-
-switch ($act) {
-case 'activate':
-    $code   = strtoupper(trim((string)($payload['code']   ?? '')));
-    $model  = substr((string)($payload['model']  ?? ''), 0, 64);
-    $system = substr((string)($payload['system'] ?? ''), 0, 64);
-    $bundle = substr((string)($payload['bundle'] ?? ''), 0, 128);
-    $ver    = substr((string)($payload['ver']    ?? ''), 0, 32);
-    if ($code === '')                           json_out(['ok'=>false,'code'=>4100,'msg'=>'code required']);
-
-    $pdo = DB::pdo();
-    $pdo->beginTransaction();
-    try {
-        $st = $pdo->prepare('SELECT * FROM codes WHERE code = ?');
-        $st->execute([$code]);
-        $rec = $st->fetch();
-        if (!$rec)              { $pdo->rollBack(); DB::log('activate','code_notfound',['fp'=>$fp,'code'=>$code]); json_out(['ok'=>false,'code'=>4101,'msg'=>'激活码不存在']); }
-        if ((int)$rec['status'] === 2) { $pdo->rollBack(); json_out(['ok'=>false,'code'=>4102,'msg'=>'激活码已禁用']); }
-
-        $nowT = now();
-        // 已绑过
-        if ((int)$rec['status'] === 1 && $rec['bound_fingerprint'] !== '') {
-            if ($rec['bound_fingerprint'] !== $fp) {
-                $pdo->rollBack();
-                DB::log('activate','code_bound_other',['fp'=>$fp,'code'=>$code]);
-                json_out(['ok'=>false,'code'=>4103,'msg'=>'激活码已被其它设备绑定']);
-            }
-            // 过期
-            if ((int)$rec['expires_at'] > 0 && (int)$rec['expires_at'] < $nowT) {
-                $pdo->rollBack();
-                json_out(['ok'=>false,'code'=>4104,'msg'=>'激活码已过期']);
-            }
+    $now = time();
+    // 分支：activate
+    if ($action === 'activate') {
+        if (!empty($c['device_id']) && $c['device_id'] !== $deviceId) {
+            pc_log('api_devmiss', $card, $deviceId, ['bound'=>$c['device_id']]);
+            api_out(1004, '卡密已绑定其它设备');
+        }
+        // 首次激活 → 绑定设备、计算到期时间
+        if (empty($c['device_id'])) {
+            $expires = $now + (int)$c['duration'];
+            $up = $db->prepare("UPDATE ".pc_t('cards')." SET status=1,device_id=?,bound_at=?,expires_at=? WHERE id=?");
+            $up->execute([$deviceId, $now, $expires, $c['id']]);
+            $c['device_id']  = $deviceId;
+            $c['bound_at']   = $now;
+            $c['expires_at'] = $expires;
         } else {
-            // 首次绑定：设定过期时间
-            $expires = $nowT + (int)$rec['duration_days'] * 86400;
-            $pdo->prepare('UPDATE codes SET status=1, bound_fingerprint=?, first_bind_at=?, expires_at=? WHERE id=?')
-                ->execute([$fp, $nowT, $expires, (int)$rec['id']]);
-            $rec['expires_at']        = $expires;
-            $rec['bound_fingerprint'] = $fp;
-            $rec['status']            = 1;
+            // 已绑同设备 → 续接返回现有到期
+            if ((int)$c['expires_at'] <= $now) {
+                // 若已过期，activate 视为失败
+                $db->prepare("UPDATE ".pc_t('cards')." SET status=3 WHERE id=?")->execute([$c['id']]);
+                pc_log('api_expired', $card, $deviceId);
+                api_out(1003, '卡密已过期');
+            }
         }
-
-        // 为该设备生成会话密钥
-        $sess    = bin2hex(random_bytes(32));
-        $sessExp = $nowT + (int)$cfg['session_ttl'];
-
-        // upsert device
-        $st = $pdo->prepare('SELECT id, disabled FROM devices WHERE fingerprint = ?');
-        $st->execute([$fp]);
-        $d = $st->fetch();
-        if ($d && (int)$d['disabled'] === 1) {
-            $pdo->rollBack();
-            DB::log('activate','device_disabled',['fp'=>$fp,'code'=>$code]);
-            json_out(['ok'=>false,'code'=>4031,'msg'=>'设备已被禁用']);
-        }
-        if ($d) {
-            $pdo->prepare('UPDATE devices SET bound_code_id=?, model=?, `system`=?, app_bundle=?, client_ver=?, last_seen=?, last_ip=?, session_key=?, session_expires_at=?, disabled=0 WHERE id=?')
-                ->execute([(int)$rec['id'], $model, $system, $bundle, $ver, $nowT, client_ip(), $sess, $sessExp, (int)$d['id']]);
-        } else {
-            $pdo->prepare('INSERT INTO devices (fingerprint, bound_code_id, model, `system`, app_bundle, client_ver, last_seen, last_ip, disabled, session_key, session_expires_at, created_at) VALUES (?,?,?,?,?,?,?,?,0,?,?,?)')
-                ->execute([$fp, (int)$rec['id'], $model, $system, $bundle, $ver, $nowT, client_ip(), $sess, $sessExp, $nowT]);
-        }
-        $pdo->prepare('UPDATE codes SET use_count = use_count + 1 WHERE id = ?')->execute([(int)$rec['id']]);
-        $pdo->commit();
-
-        DB::log('activate','ok',['fp'=>$fp,'code'=>$code]);
-        $respond([
-            'msg'                => '激活成功',
-            'session_key'        => $sess,
-            'session_expires_at' => $sessExp,
-            'bound_until'        => (int)$rec['expires_at'],
-            'level'              => (int)$rec['level'],
-            'server_time'        => $nowT,
-        ]);
-    } catch (Throwable $e) {
-        if ($pdo->inTransaction()) $pdo->rollBack();
-        DB::log('activate','exception',['fp'=>$fp,'code'=>$code,'msg'=>$e->getMessage()]);
-        json_out(['ok'=>false,'code'=>5100,'msg'=>'server error']);
     }
-    break;
+    // 分支：verify
+    elseif ($action === 'verify') {
+        if (!$c['device_id']) { pc_log('api_nobound', $card, $deviceId); api_out(1005, '未激活'); }
+        if ($c['device_id'] !== $deviceId) {
+            pc_log('api_devmiss', $card, $deviceId, ['bound'=>$c['device_id']]);
+            api_out(1004, '卡密已绑定其它设备');
+        }
+        if ((int)$c['expires_at'] <= $now) {
+            $db->prepare("UPDATE ".pc_t('cards')." SET status=3 WHERE id=?")->execute([$c['id']]);
+            pc_log('api_expired', $card, $deviceId);
+            api_out(1003, '卡密已过期');
+        }
+    } else {
+        api_out(1006, '未知 action');
+    }
 
-case 'heartbeat':
-    $st = DB::pdo()->prepare('SELECT c.* FROM codes c WHERE c.id = ?');
-    $st->execute([(int)$device['bound_code_id']]);
-    $rec = $st->fetch();
-    if (!$rec)                                   json_out(['ok'=>false,'code'=>4110,'msg'=>'未绑定有效激活码']);
-    if ((int)$rec['status'] === 2)               json_out(['ok'=>false,'code'=>4111,'msg'=>'激活码已禁用']);
-    if ($rec['bound_fingerprint'] !== $fp)       json_out(['ok'=>false,'code'=>4112,'msg'=>'设备指纹不匹配']);
-    if ((int)$rec['expires_at'] > 0 && (int)$rec['expires_at'] < now())
-                                                 json_out(['ok'=>false,'code'=>4113,'msg'=>'激活码已过期']);
+    /* ---------------- 更新设备心跳 ---------------- */
+    $dev = $db->prepare("SELECT id FROM ".pc_t('devices')." WHERE device_id=?");
+    $dev->execute([$deviceId]);
+    $de = $dev->fetch();
+    if ($de) {
+        $db->prepare("UPDATE ".pc_t('devices')." SET last_seen=?,card_id=?,ip=?,model=?,sys=?,name=?,bundle=? WHERE id=?")
+           ->execute([$now, $c['id'], pc_client_ip(),
+                      substr($devInfo['model'] ?? '', 0, 60),
+                      substr($devInfo['sys']   ?? '', 0, 30),
+                      substr($devInfo['name']  ?? '', 0, 120),
+                      substr($devInfo['bundle']?? '', 0, 120),
+                      $de['id']]);
+    } else {
+        $db->prepare("INSERT INTO ".pc_t('devices')." (device_id,card_id,model,sys,name,bundle,ip,first_seen,last_seen,status) VALUES (?,?,?,?,?,?,?,?,?,1)")
+           ->execute([$deviceId, $c['id'],
+                      substr($devInfo['model'] ?? '', 0, 60),
+                      substr($devInfo['sys']   ?? '', 0, 30),
+                      substr($devInfo['name']  ?? '', 0, 120),
+                      substr($devInfo['bundle']?? '', 0, 120),
+                      pc_client_ip(), $now, $now]);
+    }
 
-    DB::pdo()->prepare('UPDATE devices SET last_seen = ?, last_ip = ?, client_ver = ? WHERE id = ?')
-        ->execute([now(), client_ip(), substr((string)($payload['ver'] ?? ''), 0, 32), (int)$device['id']]);
+    /* ---------------- RSA 签名响应 ---------------- */
+    $expires = (int)$c['expires_at'];
+    $msg = $app_id . '|' . $deviceId . '|' . $card . '|' . $expires;
+    $sign = pc_rsa_sign($msg);
 
-    DB::log('heartbeat','ok',['fp'=>$fp]);
-    $respond([
-        'msg'                => 'alive',
-        'bound_until'        => (int)$rec['expires_at'],
-        'session_expires_at' => (int)$device['session_expires_at'],
-        'level'              => (int)$rec['level'],
-        'server_time'        => now(),
-    ]);
-    break;
+    pc_log('api_'.$action.'_ok', $card, $deviceId, ['exp'=>$expires]);
+    api_out(0, 'ok', ['expires_at'=>$expires, 'sign'=>$sign, 'type'=>$c['type']]);
 
-case 'query':
-    $st = DB::pdo()->prepare('SELECT * FROM codes WHERE id = ?');
-    $st->execute([(int)$device['bound_code_id']]);
-    $rec = $st->fetch();
-    $respond([
-        'bound_until'        => (int)($rec['expires_at'] ?? 0),
-        'level'              => (int)($rec['level']      ?? 0),
-        'session_expires_at' => (int)$device['session_expires_at'],
-        'server_time'        => now(),
-    ]);
-    break;
+} catch (Exception $e) {
+    pc_log('api_error', $card ?? '', $deviceId ?? '', $e->getMessage());
+    api_out(500, '服务器异常');
 }

@@ -1,82 +1,52 @@
 <?php
 /**
- * PersonalCenterUI 网络验证 —— 管理员会话
+ * 后台管理员登录态
  */
-declare(strict_types=1);
-if (!defined('PC_AUTH_ENTRY')) { http_response_code(403); exit('forbidden'); }
+require_once __DIR__ . '/db.php';
 
-final class AdminAuth
-{
-    public static function start(): void
-    {
-        if (session_status() === PHP_SESSION_NONE) {
-            session_set_cookie_params([
-                'lifetime' => 0,
-                'path'     => '/',
-                'httponly' => true,
-                'samesite' => 'Lax',
-                'secure'   => !empty($_SERVER['HTTPS']),
-            ]);
-            session_name('PC_ADMIN');
-            session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_name('PCAUTHSID');
+    session_start();
+}
+
+function pc_admin_login($username, $password) {
+    $row = pc_db()->prepare("SELECT * FROM ".pc_t('admin')." WHERE username=? LIMIT 1");
+    $row->execute([$username]);
+    $u = $row->fetch();
+    if (!$u) return false;
+    if (!password_verify($password, $u['password'])) return false;
+    $_SESSION['pc_admin'] = ['id'=>$u['id'],'username'=>$u['username'],'t'=>time()];
+    return true;
+}
+
+function pc_admin_logout() {
+    unset($_SESSION['pc_admin']);
+    session_destroy();
+}
+
+function pc_admin_user() {
+    return $_SESSION['pc_admin'] ?? null;
+}
+
+function pc_require_login() {
+    if (!pc_admin_user()) {
+        $base = rtrim(dirname($_SERVER['PHP_SELF']), '/\\');
+        // 如果已经在 admin/ 目录下
+        if (strpos($_SERVER['PHP_SELF'], '/admin/') !== false) {
+            header('Location: login.php'); exit;
         }
+        header('Location: admin/login.php'); exit;
     }
+}
 
-    public static function login(string $user, string $pass): bool
-    {
-        self::start();
-        $st = DB::pdo()->prepare('SELECT id, password_hash FROM admins WHERE username = ?');
-        $st->execute([$user]);
-        $r = $st->fetch();
-        if (!$r || !password_verify($pass, (string)$r['password_hash'])) {
-            DB::log('admin_login', 'fail', ['msg' => "user=$user"]);
-            return false;
-        }
-        $_SESSION['admin_id']   = (int)$r['id'];
-        $_SESSION['admin_user'] = $user;
-        $_SESSION['csrf']       = bin2hex(random_bytes(16));
-        DB::pdo()->prepare('UPDATE admins SET last_login_at = ?, last_ip = ? WHERE id = ?')
-                 ->execute([time(), client_ip(), (int)$r['id']]);
-        DB::log('admin_login', 'ok', ['msg' => "user=$user"]);
-        return true;
-    }
+function pc_csrf() {
+    if (empty($_SESSION['csrf'])) $_SESSION['csrf'] = bin2hex(random_bytes(16));
+    return $_SESSION['csrf'];
+}
 
-    public static function logout(): void
-    {
-        self::start();
-        $_SESSION = [];
-        if (ini_get('session.use_cookies')) {
-            $p = session_get_cookie_params();
-            setcookie(session_name(), '', time() - 42000, $p['path'], $p['domain'] ?? '',
-                      $p['secure'] ?? false, $p['httponly'] ?? false);
-        }
-        session_destroy();
-    }
-
-    public static function check(): void
-    {
-        self::start();
-        if (empty($_SESSION['admin_id'])) {
-            header('Location: admin.php?p=login');
-            exit;
-        }
-    }
-
-    public static function user(): string
-    {
-        self::start();
-        return (string)($_SESSION['admin_user'] ?? '');
-    }
-
-    public static function csrf(): string
-    {
-        self::start();
-        return (string)($_SESSION['csrf'] ?? '');
-    }
-
-    public static function csrfVerify(?string $token): bool
-    {
-        self::start();
-        return !empty($token) && hash_equals((string)($_SESSION['csrf'] ?? ''), (string)$token);
+function pc_check_csrf() {
+    $t = $_POST['_csrf'] ?? $_GET['_csrf'] ?? '';
+    if (!$t || !hash_equals($_SESSION['csrf'] ?? '', $t)) {
+        http_response_code(403); die('CSRF 校验失败');
     }
 }

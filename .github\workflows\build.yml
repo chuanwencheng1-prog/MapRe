@@ -52,6 +52,6 @@ jobs:
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ddddds885-package
+        name: 885-package
         path: packages/*.deb
         if-no-files-found: warn

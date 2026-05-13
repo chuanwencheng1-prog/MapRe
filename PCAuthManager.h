@@ -2,48 +2,71 @@
 //  PCAuthManager.h
 //  PersonalCenterUI
 //
-//  客户端验证中枢：
-//    · bootstrap             启动时自动校验（本地缓存 + 心跳）
-//    · activateWithCode:     首次激活 / 补激活
-//    · heartbeat             周期心跳（默认 5 分钟）
-//    · isActivated           供 UI/下载器调用的同步只读开关
-//    · signOut               踢出本机
+//  卡密授权管理器：
+//    - 设备指纹一机一码（identifierForVendor + Keychain 持久化兜底，重装不丢）
+//    - 卡密激活 / 在线验证 / 心跳续期
+//    - 服务器返回 RSA(SHA256) 签名 → 客户端用硬编码公钥验签（防中间人/抓包篡改）
+//    - 本地缓存授权凭证（NSUserDefaults + Keychain），离线启动时优先校验到期时间
 //
-//  防破解：
-//    · 所有网络请求 HMAC 签名 + AES 加密；响应 RSA 公钥验签
-//    · 本地缓存文件 AES 加密，密钥派生自设备指纹（换机即失效）
-//    · 缓存含 hmac 字段自校验，脏读直接清空
-//    · isActivated 每次都会校验 expireAt / fingerprint 一致性
+//  ========================================================================
+//  ★ 必改：把下面三项改成你自己的服务器
+//  1) kPCAuthServerBase  —— 例 "https://your.domain.com/pc_auth"
+//  2) kPCAuthAppID       —— 后台"系统设置"里 APP_ID 保持一致
+//  3) kPCAuthPubKeyPEM   —— 安装向导生成后复制 public.pem 全部内容
+//  ========================================================================
 //
 
 #import <Foundation/Foundation.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
-typedef void(^PCAuthCompletion)(BOOL success, NSString * _Nullable message);
+typedef NS_ENUM(NSInteger, PCAuthStatus) {
+    PCAuthStatusUnknown       = 0,
+    PCAuthStatusValid         = 1,   // 已授权有效
+    PCAuthStatusExpired       = 2,   // 已到期
+    PCAuthStatusInvalid       = 3,   // 卡密无效 / 已禁用
+    PCAuthStatusDeviceMismatch= 4,   // 卡密已绑定其它设备
+    PCAuthStatusNetwork       = 5,   // 网络异常
+    PCAuthStatusSignatureBad  = 6,   // 签名校验失败（可能被中间人）
+    PCAuthStatusNotActivated  = 7,   // 未激活
+};
+
+typedef void(^PCAuthCompletion)(PCAuthStatus status,
+                                NSTimeInterval expiresAt,   // UTC 秒
+                                NSString * _Nullable message);
 
 @interface PCAuthManager : NSObject
 
 + (instancetype)sharedManager;
 
-/// 启动握手：有本地激活缓存 → 尝试心跳；无 → 回调 success=NO（外层应弹激活框）。
-- (void)bootstrapWithCompletion:(PCAuthCompletion)completion;
+/// 当前设备唯一机器码（SHA256 16进制，32字节）
+- (NSString *)deviceID;
 
-/// 首次激活（或更换激活码）
-- (void)activateWithCode:(NSString *)code completion:(PCAuthCompletion)completion;
+/// 已缓存的卡密（无则 nil）
+- (nullable NSString *)cachedCardKey;
 
-/// 当前是否处于"激活态且未过期"。同步方法，可在下载前多点校验。
-- (BOOL)isActivated;
+/// 已缓存的到期 UTC 秒（0 = 无）
+- (NSTimeInterval)cachedExpiresAt;
 
-/// 手动发起心跳（内部已由定时器周期触发）
-- (void)heartbeat;
+/// 本地快速校验：有有效缓存且未过期 → YES
+- (BOOL)isLocallyAuthorized;
 
-/// 本地退出（清除缓存，下次启动需重新激活）
-- (void)signOut;
+/// 使用卡密激活（首次）
+- (void)activateWithCard:(NSString *)card
+              completion:(PCAuthCompletion)completion;
 
-/// 只读信息（用于 UI 展示）
-- (NSDate * _Nullable)boundUntil;
-- (NSString *)deviceFingerprint;
+/// 在线校验（二次启动 / 心跳）
+- (void)verifyWithCompletion:(PCAuthCompletion)completion;
+
+/// 清掉本地缓存（调试用）
+- (void)clearCache;
+
+/// 启动心跳（默认 5 分钟一次）：本地到期或服务器返回失效 → onKicked 回调
+- (void)startHeartbeatWithInterval:(NSTimeInterval)seconds
+                         onKicked:(void(^)(NSString * _Nullable reason))onKicked;
+
+/// 停止心跳
+- (void)stopHeartbeat;
 
 @end
 

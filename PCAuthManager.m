@@ -4,331 +4,419 @@
 //
 
 #import "PCAuthManager.h"
-#import "PCAuthCrypto.h"
-#import "PCAntiCrack.h"
 #import <UIKit/UIKit.h>
-#import <sys/utsname.h>
+#import <CommonCrypto/CommonDigest.h>
+#import <Security/Security.h>
+#include <sys/sysctl.h>
 
-// 本地缓存文件：放 /var/mobile/Library/Preferences/.pcui_auth.dat
-static NSString *PCAuthCachePath(void) {
-    NSString *dir = @"/var/mobile/Library/Preferences";
-    if (![[NSFileManager defaultManager] fileExistsAtPath:dir]) {
-        dir = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES).firstObject ?: NSTemporaryDirectory();
+// ====================== ★ 必改配置区 ★ ======================
+static NSString *const kPCAuthServerBase = @"http://45.207.216.109:5845";
+static NSString *const kPCAuthAppID      = @"pcui_default";
+
+// 把安装向导生成的 public.pem 内容（包括 -----BEGIN PUBLIC KEY----- 行）整段粘贴到这里
+static NSString *const kPCAuthPubKeyPEM = @""
+"-----BEGIN PUBLIC KEY-----\n"
+"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxIrSuXw2c9QyWSRI+/5L\n"
+"TMIrdKxNM6LScmV6JZDxSczyV9S5fE7dcs1kD5NTUWYd9GZSIK40VJdQlM6s2HEo\n"
+"MdGFoTtQ53Mt24Ytk73Q7eBU0WratHZtU8ySp959jgBEDbm3PgFLc6MEsp0e1mM0\n"
+"gbBok8eGrgKGHFTHPvHWYvZvIchNpVAYV8E12KAwIhQ6ko/un5JFK0DCEFbOcBJS\n"
+"35b1xKL7ZFAQ9tnWbgesN+xPQ8n/3UP4AtbaiUWioYmNhJJFxFBa03rJSjRjTQOL\n"
+"LcDhQi/Ar0pxW/jpWFUYugK3KT18BoV6q3+ggPJNYozhKWKzpABF77ryjDuWn0DI\n"
+"HwIDAQAB\n"
+"-----END PUBLIC KEY-----\n";
+// ============================================================
+
+static NSString *const kKC_Service   = @"com.personalcenterui.auth";
+static NSString *const kKC_DevAcc    = @"device_id";
+static NSString *const kKC_CardAcc   = @"card_key";
+static NSString *const kKC_ExpAcc    = @"expires_at";
+static NSString *const kKC_SigAcc    = @"last_sig";
+
+#pragma mark - Keychain Helpers
+
+static NSData *PCKC_Read(NSString *account) {
+    NSDictionary *q = @{
+        (__bridge id)kSecClass           : (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService     : kKC_Service,
+        (__bridge id)kSecAttrAccount     : account,
+        (__bridge id)kSecReturnData      : @YES,
+        (__bridge id)kSecMatchLimit      : (__bridge id)kSecMatchLimitOne,
+    };
+    CFTypeRef out = NULL;
+    OSStatus s = SecItemCopyMatching((__bridge CFDictionaryRef)q, &out);
+    if (s == errSecSuccess && out) {
+        NSData *d = (__bridge_transfer NSData *)out;
+        return d;
     }
-    return [dir stringByAppendingPathComponent:@".pcui_auth.dat"];
+    if (out) CFRelease(out);
+    return nil;
 }
 
-static NSString *PCDeviceModel(void) {
-    struct utsname u; uname(&u);
-    return [NSString stringWithUTF8String:u.machine] ?: @"unknown";
+static void PCKC_Write(NSString *account, NSData *data) {
+    NSDictionary *q = @{
+        (__bridge id)kSecClass       : (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService : kKC_Service,
+        (__bridge id)kSecAttrAccount : account,
+    };
+    SecItemDelete((__bridge CFDictionaryRef)q);
+    NSMutableDictionary *add = [q mutableCopy];
+    add[(__bridge id)kSecValueData] = data ?: [NSData data];
+    SecItemAdd((__bridge CFDictionaryRef)add, NULL);
 }
+
+static void PCKC_Delete(NSString *account) {
+    NSDictionary *q = @{
+        (__bridge id)kSecClass       : (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService : kKC_Service,
+        (__bridge id)kSecAttrAccount : account,
+    };
+    SecItemDelete((__bridge CFDictionaryRef)q);
+}
+
+#pragma mark - Hash / Base64
+
+static NSString *PCSha256Hex(NSString *input) {
+    NSData *data = [input dataUsingEncoding:NSUTF8StringEncoding];
+    unsigned char h[CC_SHA256_DIGEST_LENGTH] = {0};
+    CC_SHA256(data.bytes, (CC_LONG)data.length, h);
+    NSMutableString *s = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) [s appendFormat:@"%02x", h[i]];
+    return s;
+}
+
+static NSData *PCSha256Raw(NSData *data) {
+    unsigned char h[CC_SHA256_DIGEST_LENGTH] = {0};
+    CC_SHA256(data.bytes, (CC_LONG)data.length, h);
+    return [NSData dataWithBytes:h length:CC_SHA256_DIGEST_LENGTH];
+}
+
+static NSData *PCBase64Decode(NSString *s) {
+    if (!s.length) return nil;
+    NSString *t = [s stringByReplacingOccurrencesOfString:@"\n" withString:@""];
+    t = [t stringByReplacingOccurrencesOfString:@"\r" withString:@""];
+    t = [t stringByReplacingOccurrencesOfString:@" "  withString:@""];
+    return [[NSData alloc] initWithBase64EncodedString:t options:0];
+}
+
+#pragma mark - RSA Public Key Import
+
+/// 从 PEM（SubjectPublicKeyInfo / PKCS#1）字符串导入公钥，返回 SecKeyRef（需 release）
+static SecKeyRef PCImportPubKey(NSString *pem) CF_RETURNS_RETAINED {
+    if (!pem.length) return NULL;
+    NSMutableString *s = [pem mutableCopy];
+    [s replaceOccurrencesOfString:@"-----BEGIN PUBLIC KEY-----"  withString:@"" options:0 range:NSMakeRange(0, s.length)];
+    [s replaceOccurrencesOfString:@"-----END PUBLIC KEY-----"    withString:@"" options:0 range:NSMakeRange(0, s.length)];
+    [s replaceOccurrencesOfString:@"-----BEGIN RSA PUBLIC KEY-----" withString:@"" options:0 range:NSMakeRange(0, s.length)];
+    [s replaceOccurrencesOfString:@"-----END RSA PUBLIC KEY-----"   withString:@"" options:0 range:NSMakeRange(0, s.length)];
+    NSData *der = PCBase64Decode(s);
+    if (!der.length) return NULL;
+
+    // 若是 X.509 SPKI（标准 PEM BEGIN PUBLIC KEY），跳过前 24 字节 AlgorithmIdentifier
+    // 注意：iOS SecKeyCreateWithData 只接受裸 PKCS#1 公钥（DER of RSAPublicKey）
+    // 这里简单判断：长度 > 24 并以 0x30 开头，截掉 SPKI 头
+    NSData *pkcs1 = der;
+    if (der.length > 24) {
+        const uint8_t *b = der.bytes;
+        // SPKI 头一般为 30 82 xx xx 30 0d 06 09 2a 86 48 86 f7 0d 01 01 01 05 00 03 82 xx xx 00
+        if (b[0] == 0x30 && b[1] == 0x82) {
+            // 粗暴查找 0x03 0x82 xx xx 0x00 作为 BIT STRING 标识
+            for (NSUInteger i = 0; i + 5 < der.length; i++) {
+                if (b[i] == 0x03 && b[i+1] == 0x82 && b[i+4] == 0x00) {
+                    pkcs1 = [der subdataWithRange:NSMakeRange(i + 5, der.length - i - 5)];
+                    break;
+                }
+            }
+        }
+    }
+
+    NSDictionary *attrs = @{
+        (__bridge id)kSecAttrKeyType       : (__bridge id)kSecAttrKeyTypeRSA,
+        (__bridge id)kSecAttrKeyClass      : (__bridge id)kSecAttrKeyClassPublic,
+        (__bridge id)kSecAttrKeySizeInBits : @2048,
+    };
+    CFErrorRef err = NULL;
+    SecKeyRef key = SecKeyCreateWithData((__bridge CFDataRef)pkcs1,
+                                         (__bridge CFDictionaryRef)attrs,
+                                         &err);
+    if (!key) {
+        // 兜底：尝试直接当 SPKI 传
+        if (err) CFRelease(err);
+        err = NULL;
+        key = SecKeyCreateWithData((__bridge CFDataRef)der,
+                                   (__bridge CFDictionaryRef)attrs,
+                                   &err);
+    }
+    if (err) CFRelease(err);
+    return key;
+}
+
+/// 使用公钥验证 RSA-SHA256 签名
+static BOOL PCRSAVerify(NSString *pem, NSString *message, NSString *signB64) {
+    if (!pem.length || !message.length || !signB64.length) return NO;
+    SecKeyRef pub = PCImportPubKey(pem);
+    if (!pub) return NO;
+
+    NSData *msg  = [message dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *sig  = PCBase64Decode(signB64);
+    if (!sig.length) { CFRelease(pub); return NO; }
+
+    CFErrorRef err = NULL;
+    BOOL ok = SecKeyVerifySignature(pub,
+                                    kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA256,
+                                    (__bridge CFDataRef)msg,
+                                    (__bridge CFDataRef)sig,
+                                    &err);
+    if (err) CFRelease(err);
+    CFRelease(pub);
+    return ok;
+}
+
+#pragma mark - Device Fingerprint
+
+static NSString *PCHwModel(void) {
+    size_t size = 0;
+    sysctlbyname("hw.machine", NULL, &size, NULL, 0);
+    char *m = (char *)malloc(size + 1);
+    if (!m) return @"";
+    sysctlbyname("hw.machine", m, &size, NULL, 0);
+    m[size] = '\0';
+    NSString *s = [NSString stringWithUTF8String:m];
+    free(m);
+    return s ?: @"";
+}
+
+#pragma mark - Manager
 
 @interface PCAuthManager ()
-@property (nonatomic, copy)   NSString *fingerprint;       // 设备指纹
-@property (nonatomic, copy)   NSString *sessionKey;        // 服务器下发
-@property (nonatomic, assign) NSTimeInterval sessionExpireAt;
-@property (nonatomic, assign) NSTimeInterval boundUntilTs;
-@property (nonatomic, assign) NSInteger level;
-@property (nonatomic, strong) NSTimer *heartbeatTimer;
-@property (nonatomic, strong) dispatch_queue_t q;
+@property (nonatomic, copy) NSString *cachedDeviceID;
+@property (nonatomic, strong) dispatch_source_t hbTimer;
+@property (nonatomic, copy)   void (^hbKick)(NSString *);
 @end
 
 @implementation PCAuthManager
 
 + (instancetype)sharedManager {
-    static PCAuthManager *m = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ m = [[self alloc] init]; });
-    return m;
+    static PCAuthManager *g; static dispatch_once_t t;
+    dispatch_once(&t, ^{ g = [[PCAuthManager alloc] init]; });
+    return g;
 }
 
-- (instancetype)init {
-    if ((self = [super init])) {
-        _q = dispatch_queue_create("com.pcui.auth.q", DISPATCH_QUEUE_SERIAL);
-        _fingerprint = [self _computeFingerprint];
-        [self _loadCache];
+- (NSString *)deviceID {
+    if (self.cachedDeviceID.length) return self.cachedDeviceID;
+
+    // 优先 Keychain（重装 App 也不丢）
+    NSData *d = PCKC_Read(kKC_DevAcc);
+    if (d.length) {
+        NSString *s = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+        if (s.length == 64) { self.cachedDeviceID = s; return s; }
     }
-    return self;
+
+    NSString *idfv  = [UIDevice currentDevice].identifierForVendor.UUIDString ?: @"";
+    NSString *name  = [UIDevice currentDevice].name ?: @"";
+    NSString *model = PCHwModel();
+    NSString *bundle= [NSBundle mainBundle].bundleIdentifier ?: @"";
+    NSString *raw   = [NSString stringWithFormat:@"%@|%@|%@|%@|%@",
+                       kPCAuthAppID, idfv, model, name, bundle];
+    NSString *hash  = PCSha256Hex(raw);
+    PCKC_Write(kKC_DevAcc, [hash dataUsingEncoding:NSUTF8StringEncoding]);
+    self.cachedDeviceID = hash;
+    return hash;
 }
 
-#pragma mark - Public
-
-- (NSString *)deviceFingerprint { return _fingerprint ?: @""; }
-- (NSDate *)boundUntil {
-    return _boundUntilTs > 0 ? [NSDate dateWithTimeIntervalSince1970:_boundUntilTs] : nil;
+- (NSString *)cachedCardKey {
+    NSData *d = PCKC_Read(kKC_CardAcc);
+    if (!d.length) return nil;
+    return [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
 }
 
-- (BOOL)isActivated {
-    // 多重校验：任何一项不满足都视为未激活
-    if (_fingerprint.length == 0)                    return NO;
-    if (_sessionKey.length   == 0)                   return NO;
-    if (_boundUntilTs <= 0)                          return NO;
-    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (_boundUntilTs   < now)                       return NO;
-    if (_sessionExpireAt < now - 60)                 return NO; // 会话过期也视为失效
-    return YES;
+- (NSTimeInterval)cachedExpiresAt {
+    NSData *d = PCKC_Read(kKC_ExpAcc);
+    if (!d.length) return 0;
+    NSString *s = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+    return s.doubleValue;
 }
 
-- (void)signOut {
-    dispatch_sync(_q, ^{
-        self.sessionKey      = @"";
-        self.sessionExpireAt = 0;
-        self.boundUntilTs    = 0;
-        self.level           = 0;
-        [[NSFileManager defaultManager] removeItemAtPath:PCAuthCachePath() error:nil];
-    });
-    // NSTimer 必须在创建它的线程（主线程）上 invalidate，否则跨线程 invalidate 会导致 EXC_BAD_ACCESS
-    if ([NSThread isMainThread]) {
-        [self _stopHeartbeat];
-    } else {
+- (BOOL)isLocallyAuthorized {
+    NSString *card = [self cachedCardKey];
+    NSTimeInterval exp = [self cachedExpiresAt];
+    if (!card.length || exp <= 0) return NO;
+    if ([[NSDate date] timeIntervalSince1970] >= exp) return NO;
+    // 额外：校验上次服务器签名仍对得上（防止本地被改写）
+    NSData *sigD = PCKC_Read(kKC_SigAcc);
+    NSString *sig = sigD.length ? [[NSString alloc] initWithData:sigD encoding:NSUTF8StringEncoding] : nil;
+    if (!sig.length) return NO;
+    NSString *msg = [NSString stringWithFormat:@"%@|%@|%@|%.0f",
+                     kPCAuthAppID, [self deviceID], card, exp];
+    return PCRSAVerify(kPCAuthPubKeyPEM, msg, sig);
+}
+
+- (void)clearCache {
+    PCKC_Delete(kKC_CardAcc);
+    PCKC_Delete(kKC_ExpAcc);
+    PCKC_Delete(kKC_SigAcc);
+}
+
+#pragma mark - Network
+
+- (NSString *)_nonce {
+    unsigned char b[16]; arc4random_buf(b, sizeof(b));
+    NSMutableString *s = [NSMutableString stringWithCapacity:32];
+    for (int i = 0; i < 16; i++) [s appendFormat:@"%02x", b[i]];
+    return s;
+}
+
+- (void)_postAction:(NSString *)action
+               card:(NSString *)card
+         completion:(PCAuthCompletion)completion {
+    NSString *did   = [self deviceID];
+    NSString *nonce = [self _nonce];
+    NSTimeInterval ts = [[NSDate date] timeIntervalSince1970];
+
+    NSDictionary *body = @{
+        @"app_id"    : kPCAuthAppID,
+        @"action"    : action,
+        @"card"      : card ?: @"",
+        @"device_id" : did,
+        @"device_info": @{
+            @"model" : PCHwModel(),
+            @"sys"   : [[UIDevice currentDevice].systemVersion ?: @""],
+            @"name"  : [[UIDevice currentDevice].name ?: @""],
+            @"bundle": ([NSBundle mainBundle].bundleIdentifier ?: @""),
+        },
+        @"ts"        : @((long long)ts),
+        @"nonce"     : nonce,
+    };
+    NSError *je = nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:body options:0 error:&je];
+    if (!data) {
+        if (completion) completion(PCAuthStatusNetwork, 0, je.localizedDescription);
+        return;
+    }
+
+    NSString *url = [NSString stringWithFormat:@"%@/api.php", kPCAuthServerBase];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:url]];
+    req.HTTPMethod = @"POST";
+    req.timeoutInterval = 15;
+    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    req.HTTPBody = data;
+
+    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration defaultSessionConfiguration];
+    cfg.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    NSURLSession *sess = [NSURLSession sessionWithConfiguration:cfg];
+    __weak typeof(self) ws = self;
+
+    NSURLSessionDataTask *task = [sess dataTaskWithRequest:req
+        completionHandler:^(NSData * _Nullable rd, NSURLResponse * _Nullable resp, NSError * _Nullable err) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self _stopHeartbeat];
-        });
-    }
-}
-
-- (void)bootstrapWithCompletion:(PCAuthCompletion)completion {
-    NSString *reason = nil;
-    if (![PCAntiCrack check:&reason]) {
-        if (completion) completion(NO, [NSString stringWithFormat:@"环境异常：%@", reason ?: @"unknown"]);
-        return;
-    }
-    if (![self isActivated]) {
-        if (completion) completion(NO, @"未激活，请输入激活码");
-        return;
-    }
-    // 有本地态 → 尝试心跳
-    [self _request:@"heartbeat" payload:@{@"ver": [self _clientVer]} completion:^(BOOL ok, NSDictionary *resp, NSString *msg) {
-        if (ok) {
-            [self _startHeartbeat];
-            if (completion) completion(YES, @"已激活");
-        } else {
-            // 心跳失败视为掉线，要求用户重新激活
-            [self signOut];
-            if (completion) completion(NO, msg ?: @"会话失效，请重新激活");
-        }
-    }];
-}
-
-- (void)activateWithCode:(NSString *)code completion:(PCAuthCompletion)completion {
-    NSString *reason = nil;
-    if (![PCAntiCrack check:&reason]) {
-        if (completion) completion(NO, [NSString stringWithFormat:@"环境异常：%@", reason ?: @"unknown"]);
-        return;
-    }
-    code = [[code stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] uppercaseString];
-    if (code.length < 8) { if (completion) completion(NO, @"激活码格式不正确"); return; }
-
-    NSDictionary *payload = @{
-        @"code":   code,
-        @"model":  PCDeviceModel(),
-        @"system": [[UIDevice currentDevice] systemVersion] ?: @"",
-        @"bundle": [[NSBundle mainBundle] bundleIdentifier] ?: @"",
-        @"ver":    [self _clientVer],
-    };
-    [self _request:@"activate" payload:payload completion:^(BOOL ok, NSDictionary *resp, NSString *msg) {
-        if (!ok) { if (completion) completion(NO, msg); return; }
-        self.sessionKey      = [resp[@"session_key"] description] ?: @"";
-        self.sessionExpireAt = [resp[@"session_expires_at"] doubleValue];
-        self.boundUntilTs    = [resp[@"bound_until"]        doubleValue];
-        self.level           = [resp[@"level"]              integerValue];
-        [self _saveCache];
-        [self _startHeartbeat];
-        if (completion) completion(YES, [resp[@"msg"] description] ?: @"激活成功");
-    }];
-}
-
-- (void)heartbeat {
-    if (![self isActivated]) return;
-    [self _request:@"heartbeat" payload:@{@"ver": [self _clientVer]} completion:^(BOOL ok, NSDictionary *r, NSString *msg) {
-        if (!ok) {
-            // signOut 内含 NSTimer invalidate，必须回到主线程执行
-            dispatch_async(dispatch_get_main_queue(), ^{ [self signOut]; });
-        } else {
-            self.boundUntilTs    = [r[@"bound_until"]        doubleValue] ?: self.boundUntilTs;
-            self.sessionExpireAt = [r[@"session_expires_at"] doubleValue] ?: self.sessionExpireAt;
-            [self _saveCache];
-        }
-    }];
-}
-
-#pragma mark - 指纹
-
-- (NSString *)_computeFingerprint {
-    NSString *idfv   = [[UIDevice currentDevice].identifierForVendor UUIDString] ?: @"";
-    NSString *bundle = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
-    NSString *model  = PCDeviceModel();
-    NSString *os     = [[UIDevice currentDevice].systemVersion componentsSeparatedByString:@"."].firstObject ?: @"";
-    // 混入一个编译期 salt（与服务端无关，仅稳定性用）
-    NSString *composite = [NSString stringWithFormat:@"%@|%@|%@|%@|pcui", idfv, bundle, model, os];
-    NSData *h = [PCAuthCrypto sha256:[composite dataUsingEncoding:NSUTF8StringEncoding]];
-    return [PCAuthCrypto hexString:h];
-}
-
-- (NSString *)_clientVer { return @"1.0.0"; }
-
-#pragma mark - 心跳
-
-- (void)_startHeartbeat {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self _stopHeartbeat];
-        self.heartbeatTimer = [NSTimer scheduledTimerWithTimeInterval:300
-                                                               target:self
-                                                             selector:@selector(heartbeat)
-                                                             userInfo:nil
-                                                              repeats:YES];
-    });
-}
-
-- (void)_stopHeartbeat {
-    [_heartbeatTimer invalidate];
-    _heartbeatTimer = nil;
-}
-
-#pragma mark - 本地缓存（AES 加密，设备指纹派生密钥）
-
-- (NSString *)_cacheKeyMaterial {
-    // 设备指纹 + 编译期常量混合，离开本机无法解密
-    return [NSString stringWithFormat:@"pcui-auth-v1::%@", self.fingerprint];
-}
-
-- (void)_loadCache {
-    NSData *raw = [NSData dataWithContentsOfFile:PCAuthCachePath()];
-    if (raw.length < 16 + 32) return;
-
-    NSData *iv  = [raw subdataWithRange:NSMakeRange(0, 16)];
-    NSData *tag = [raw subdataWithRange:NSMakeRange(16, 32)];
-    NSData *ct  = [raw subdataWithRange:NSMakeRange(48, raw.length - 48)];
-
-    // HMAC 自校验：tag = HMAC(iv||ct, km)
-    NSMutableData *msg = [NSMutableData dataWithData:iv]; [msg appendData:ct];
-    NSData *km  = [[self _cacheKeyMaterial] dataUsingEncoding:NSUTF8StringEncoding];
-    NSData *mac = [PCAuthCrypto hmacSHA256:msg key:km];
-    if (![mac isEqualToData:tag]) return;
-
-    NSData *pt = [PCAuthCrypto aesDecrypt:ct keyMaterial:[self _cacheKeyMaterial] iv:iv];
-    if (!pt) return;
-    NSDictionary *d = [NSJSONSerialization JSONObjectWithData:pt options:0 error:nil];
-    if (![d isKindOfClass:[NSDictionary class]]) return;
-
-    // 指纹复核
-    if (![[d objectForKey:@"fp"] isEqualToString:self.fingerprint]) return;
-    self.sessionKey      = [d[@"sk"] description] ?: @"";
-    self.sessionExpireAt = [d[@"se"] doubleValue];
-    self.boundUntilTs    = [d[@"bu"] doubleValue];
-    self.level           = [d[@"lv"] integerValue];
-}
-
-- (void)_saveCache {
-    NSDictionary *d = @{
-        @"fp": self.fingerprint ?: @"",
-        @"sk": self.sessionKey   ?: @"",
-        @"se": @(self.sessionExpireAt),
-        @"bu": @(self.boundUntilTs),
-        @"lv": @(self.level),
-    };
-    NSData *pt = [NSJSONSerialization dataWithJSONObject:d options:0 error:nil];
-    if (!pt) return;
-    NSData *iv = [PCAuthCrypto randomBytes:16];
-    NSData *ct = [PCAuthCrypto aesEncrypt:pt keyMaterial:[self _cacheKeyMaterial] iv:iv];
-    if (!ct) return;
-
-    NSMutableData *msg = [NSMutableData dataWithData:iv]; [msg appendData:ct];
-    NSData *km  = [[self _cacheKeyMaterial] dataUsingEncoding:NSUTF8StringEncoding];
-    NSData *tag = [PCAuthCrypto hmacSHA256:msg key:km];
-
-    NSMutableData *out = [NSMutableData data];
-    [out appendData:iv]; [out appendData:tag]; [out appendData:ct];
-    [out writeToFile:PCAuthCachePath() atomically:YES];
-}
-
-#pragma mark - 网络层
-
-- (void)_request:(NSString *)act payload:(NSDictionary *)payload completion:(void(^)(BOOL ok, NSDictionary *resp, NSString *msg))completion {
-    dispatch_async(_q, ^{
-        NSURL *url = [NSURL URLWithString:[PCAuthCrypto apiURL]];
-        if (!url) { if (completion) completion(NO, nil, @"API 地址未配置"); return; }
-
-        // shared key 判定
-        NSString *shared = [act isEqualToString:@"activate"] ? [PCAuthCrypto baseSecret] : (self.sessionKey ?: @"");
-        if (shared.length == 0) { if (completion) completion(NO, nil, @"会话密钥缺失"); return; }
-
-        // 加密 payload
-        NSData *pt = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
-        NSData *iv = [PCAuthCrypto randomBytes:16];
-        NSData *ct = [PCAuthCrypto aesEncrypt:pt keyMaterial:shared iv:iv];
-        if (!ct) { if (completion) completion(NO, nil, @"加密失败"); return; }
-        NSString *bodyB = [PCAuthCrypto b64uEncode:ct];
-        NSString *ivB   = [PCAuthCrypto b64uEncode:iv];
-
-        long long ts = (long long)[[NSDate date] timeIntervalSince1970];
-        NSString *nonce = [PCAuthCrypto hexString:[PCAuthCrypto randomBytes:16]];
-        NSString *fp    = self.fingerprint ?: @"";
-        int ver         = 1;
-
-        NSString *canonical = [NSString stringWithFormat:@"%d|%@|%lld|%@|%@|%@|%@",
-                               ver, act, ts, nonce, fp, bodyB, ivB];
-        NSData *sig = [PCAuthCrypto hmacSHA256:[canonical dataUsingEncoding:NSUTF8StringEncoding]
-                                           key:[shared dataUsingEncoding:NSUTF8StringEncoding]];
-
-        NSDictionary *req = @{
-            @"v":     @(ver),
-            @"act":   act,
-            @"ts":    @(ts),
-            @"nonce": nonce,
-            @"fp":    fp,
-            @"body":  bodyB,
-            @"iv":    ivB,
-            @"sig":   [PCAuthCrypto hexString:sig],
-        };
-        NSData *reqData = [NSJSONSerialization dataWithJSONObject:req options:0 error:nil];
-
-        NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:url];
-        r.HTTPMethod = @"POST";
-        r.timeoutInterval = 15.0;
-        [r setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-        [r setValue:@"PCUIAuth/1.0"     forHTTPHeaderField:@"User-Agent"];
-        r.HTTPBody = reqData;
-
-        NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-        cfg.TLSMinimumSupportedProtocolVersion = tls_protocol_version_TLSv12;
-        NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
-        [[session dataTaskWithRequest:r completionHandler:^(NSData *d, NSURLResponse *resp, NSError *err) {
-            if (err) { if (completion) completion(NO, nil, err.localizedDescription); return; }
-            NSDictionary *j = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
-            if (![j isKindOfClass:[NSDictionary class]]) { if (completion) completion(NO, nil, @"响应解析失败"); return; }
-            if (![j[@"ok"] boolValue]) {
-                NSString *m = [j[@"msg"] description] ?: @"验证失败";
-                if (completion) completion(NO, nil, m);
+            if (err || !rd.length) {
+                if (completion) completion(PCAuthStatusNetwork, 0, err.localizedDescription ?: @"网络异常");
                 return;
             }
-            NSString *bodyRespB = [j[@"body"] description];
-            NSString *ivRespB   = [j[@"iv"]   description];
-            NSString *sigRespB  = [j[@"sig"]  description];
-            if (bodyRespB.length == 0 || ivRespB.length == 0) {
-                if (completion) completion(NO, nil, @"响应字段缺失"); return;
+            NSError *pe = nil;
+            id j = [NSJSONSerialization JSONObjectWithData:rd options:0 error:&pe];
+            if (![j isKindOfClass:[NSDictionary class]]) {
+                if (completion) completion(PCAuthStatusNetwork, 0, @"响应解析失败");
+                return;
             }
-            // RSA 验签（公钥在本地，服务器无法伪造签名 → 强防 MITM）
-            NSString *toSign = [NSString stringWithFormat:@"%@|%@", bodyRespB, ivRespB];
-            NSData *hash    = [PCAuthCrypto sha256:[toSign dataUsingEncoding:NSUTF8StringEncoding]];
-            NSData *sigData = [PCAuthCrypto b64uDecode:sigRespB];
-            NSString *pem   = [PCAuthCrypto rsaPublicPEM];
-            BOOL sigOk = YES;
-            if (pem.length > 0 && ![pem containsString:@"PASTE_YOUR_PUBLIC_KEY"]) {
-                sigOk = [PCAuthCrypto verifyRSA:hash signature:sigData publicPEM:pem];
-            }
-            if (!sigOk) { if (completion) completion(NO, nil, @"响应签名校验失败"); return; }
+            NSDictionary *r = (NSDictionary *)j;
+            NSInteger code = [r[@"code"] integerValue];
+            NSString *msg  = r[@"msg"];
+            NSDictionary *d = [r[@"data"] isKindOfClass:[NSDictionary class]] ? r[@"data"] : @{};
+            NSTimeInterval expires = [d[@"expires_at"] doubleValue];
+            NSString *sig  = d[@"sign"];
 
-            // 解密
-            NSData *ctR = [PCAuthCrypto b64uDecode:bodyRespB];
-            NSData *ivR = [PCAuthCrypto b64uDecode:ivRespB];
-            NSData *pt  = [PCAuthCrypto aesDecrypt:ctR keyMaterial:shared iv:ivR];
-            if (!pt) { if (completion) completion(NO, nil, @"响应解密失败"); return; }
-            NSDictionary *inner = [NSJSONSerialization JSONObjectWithData:pt options:0 error:nil];
-            if (![inner isKindOfClass:[NSDictionary class]]) { if (completion) completion(NO, nil, @"响应解析失败"); return; }
-            if (completion) completion(YES, inner, [inner[@"msg"] description] ?: @"ok");
-        }] resume];
+            if (code == 0) {
+                // 必须通过签名校验：msg = app_id|device_id|card|expires_at
+                NSString *verifyMsg = [NSString stringWithFormat:@"%@|%@|%@|%.0f",
+                                       kPCAuthAppID, [ws deviceID], card ?: @"", expires];
+                BOOL ok = PCRSAVerify(kPCAuthPubKeyPEM, verifyMsg, sig);
+                if (!ok) {
+                    if (completion) completion(PCAuthStatusSignatureBad, 0, @"签名校验失败");
+                    return;
+                }
+                // 写缓存
+                PCKC_Write(kKC_CardAcc, [(card ?: @"") dataUsingEncoding:NSUTF8StringEncoding]);
+                PCKC_Write(kKC_ExpAcc, [[NSString stringWithFormat:@"%.0f", expires] dataUsingEncoding:NSUTF8StringEncoding]);
+                PCKC_Write(kKC_SigAcc, [(sig ?: @"") dataUsingEncoding:NSUTF8StringEncoding]);
+                if (completion) completion(PCAuthStatusValid, expires, msg);
+                return;
+            }
+            // 非 0 错误码映射
+            PCAuthStatus st = PCAuthStatusInvalid;
+            switch (code) {
+                case 1001: st = PCAuthStatusInvalid;        break; // 卡密不存在
+                case 1002: st = PCAuthStatusInvalid;        break; // 已禁用
+                case 1003: st = PCAuthStatusExpired;        break; // 已过期
+                case 1004: st = PCAuthStatusDeviceMismatch; break; // 绑定不一致
+                case 1005: st = PCAuthStatusNotActivated;   break;
+                default:   st = PCAuthStatusInvalid;        break;
+            }
+            if (completion) completion(st, expires, msg ?: @"授权失败");
+        });
+    }];
+    [task resume];
+}
+
+- (void)activateWithCard:(NSString *)card
+              completion:(PCAuthCompletion)completion {
+    if (!card.length) {
+        if (completion) completion(PCAuthStatusInvalid, 0, @"卡密不能为空");
+        return;
+    }
+    [self _postAction:@"activate" card:card completion:completion];
+}
+
+- (void)verifyWithCompletion:(PCAuthCompletion)completion {
+    NSString *c = [self cachedCardKey];
+    if (!c.length) {
+        if (completion) completion(PCAuthStatusNotActivated, 0, @"未激活");
+        return;
+    }
+    [self _postAction:@"verify" card:c completion:completion];
+}
+
+#pragma mark - Heartbeat
+
+- (void)startHeartbeatWithInterval:(NSTimeInterval)seconds
+                         onKicked:(void(^)(NSString * _Nullable))onKicked {
+    [self stopHeartbeat];
+    self.hbKick = onKicked;
+    if (seconds < 30) seconds = 300; // 最小 30s，默认 5min
+    dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,
+                                                 0, 0, dispatch_get_main_queue());
+    uint64_t iv = (uint64_t)(seconds * NSEC_PER_SEC);
+    dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, iv), iv, (uint64_t)(10 * NSEC_PER_SEC));
+    __weak typeof(self) ws = self;
+    dispatch_source_set_event_handler(t, ^{
+        __strong typeof(ws) ss = ws; if (!ss) return;
+        // 先做本地到期检查
+        NSTimeInterval exp = [ss cachedExpiresAt];
+        if (exp > 0 && [[NSDate date] timeIntervalSince1970] >= exp) {
+            if (ss.hbKick) ss.hbKick(@"授权已到期");
+            return;
+        }
+        // 服务器验证
+        [ss verifyWithCompletion:^(PCAuthStatus status, NSTimeInterval expiresAt, NSString * _Nullable message) {
+            if (status == PCAuthStatusExpired || status == PCAuthStatusInvalid
+                || status == PCAuthStatusDeviceMismatch
+                || status == PCAuthStatusSignatureBad
+                || status == PCAuthStatusNotActivated) {
+                [ss clearCache];
+                if (ss.hbKick) ss.hbKick(message ?: @"授权失效");
+            }
+            // 网络异常不踢人
+        }];
     });
+    self.hbTimer = t;
+    dispatch_resume(t);
+}
+
+- (void)stopHeartbeat {
+    if (self.hbTimer) {
+        dispatch_source_cancel(self.hbTimer);
+        self.hbTimer = nil;
+    }
+    self.hbKick = nil;
 }
 
 @end

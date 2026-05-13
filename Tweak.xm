@@ -15,6 +15,35 @@
 
 #import <UIKit/UIKit.h>
 #import "PCMainViewController.h"
+#import "PCAuthPopView.h"
+#import "PCAuthManager.h"
+
+// 授权门禁宿主 VC：仅承载卡密弹窗，本身全透明 / 黑底
+@interface PCAuthGateVC : UIViewController
+@property (nonatomic, strong) PCAuthPopView *pop;
+@property (nonatomic, copy)   void (^onAuthorized)(void);
+@end
+@implementation PCAuthGateVC
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35];
+}
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (self.pop) return;
+    self.pop = [[PCAuthPopView alloc] init];
+    __weak typeof(self) ws = self;
+    [self.pop presentFromVC:self onAuthorized:^{
+        __strong typeof(ws) ss = ws;
+        if (!ss) return;
+        void (^cb)(void) = ss.onAuthorized;
+        [ss dismissViewControllerAnimated:NO completion:^{
+            if (cb) cb();
+        }];
+    }];
+}
+- (UIStatusBarStyle)preferredStatusBarStyle { return UIStatusBarStyleLightContent; }
+@end
 
 static void PCPresentMainWindow(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -51,9 +80,44 @@ static void PCPresentMainWindow(void) {
         while (top.presentedViewController) top = top.presentedViewController;
         if ([top isKindOfClass:[PCMainViewController class]]) return;
 
-        PCMainViewController *vc = [[PCMainViewController alloc] init];
-        vc.modalPresentationStyle = UIModalPresentationFullScreen;
-        [top presentViewController:vc animated:NO completion:nil];
+        // 如已挂过门禁 VC 不重复
+        if ([top isKindOfClass:[PCAuthGateVC class]]) return;
+
+        void (^presentMain)(UIViewController *) = ^(UIViewController *onTop){
+            PCMainViewController *vc = [[PCMainViewController alloc] init];
+            vc.modalPresentationStyle = UIModalPresentationFullScreen;
+            [onTop presentViewController:vc animated:NO completion:^{
+                // 启动心跳：到期 / 服务器踢人 → 弹警告 + 关闭主 VC 强制重新激活
+                [[PCAuthManager sharedManager] startHeartbeatWithInterval:300 onKicked:^(NSString * _Nullable reason) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [[PCAuthManager sharedManager] stopHeartbeat];
+                        UIAlertController *al = [UIAlertController
+                            alertControllerWithTitle:@"授权失效"
+                                             message:reason ?: @"授权已到期，需重新激活"
+                                      preferredStyle:UIAlertControllerStyleAlert];
+                        [al addAction:[UIAlertAction actionWithTitle:@"重新激活" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull a) {
+                            [vc dismissViewControllerAnimated:NO completion:^{
+                                PCPresentMainWindow();
+                            }];
+                        }]];
+                        UIViewController *topV = vc;
+                        while (topV.presentedViewController) topV = topV.presentedViewController;
+                        [topV presentViewController:al animated:YES completion:nil];
+                    });
+                }];
+            }];
+        };
+
+        PCAuthGateVC *gate = [[PCAuthGateVC alloc] init];
+        gate.modalPresentationStyle = UIModalPresentationOverFullScreen;
+        gate.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
+        __weak PCAuthGateVC *wg = gate;
+        gate.onAuthorized = ^{
+            UIViewController *p = wg.presentingViewController;
+            // 授权通过后走原来的主 VC
+            presentMain(p ?: top);
+        };
+        [top presentViewController:gate animated:YES completion:nil];
     });
 }
 
