@@ -329,8 +329,15 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
 
 - (void)presentAuthIfNeeded {
     if (self.authorized) return;
-    if (self.authPresented) return;
-    if (self.authPop && self.authPop.superview) return;
+    if (self.authPresented && self.authPop && self.authPop.superview) return;
+    // 【修复】确保本 VC 视图已挂到 window，避免未挂窗下 addSubview 导致的异常
+    if (!self.isViewLoaded || !self.view.window) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self presentAuthIfNeeded];
+        });
+        return;
+    }
     self.authPresented = YES;
 
     // 在主 VC 自身 view 上 addSubview 卡密弹窗
@@ -343,14 +350,16 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
         ss.authorized = YES;
         ss.authPop = nil;
         [ss startAuthHeartbeat];
-        // 授权成功 → 异步拉取远程菜单配置（首次或更新时无感替换）
+        // 授权成功 → 异步拉取远程菜单配置
         [ss _refreshRemoteMenusIfNeeded];
     }];
 }
 
 - (void)startAuthHeartbeat {
     __weak typeof(self) ws = self;
-    [[PCAuthManager sharedManager] startHeartbeatWithInterval:300
+    // 【修复】心跳周期由 300s 缩短到 60s，
+    // 让后台“踢下线 / 禁用卡密”最长 1 分钟内在本机生效
+    [[PCAuthManager sharedManager] startHeartbeatWithInterval:60
                                                      onKicked:^(NSString * _Nullable reason) {
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(ws) ss = ws; if (!ss) return;
@@ -361,8 +370,20 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
 }
 
 - (void)showAuthExpiredAlert:(NSString *)reason {
+    // 【修复】到期弹窗前先清理已有 UI：下载弹窗 / 旧 authPop / 已弹的 alert
+    // 避免多层弹窗堆叠 + present 在动画中造成崩溃
+    if (self.pop) {
+        [self.pop dismiss];
+    }
+    if (self.authPop) {
+        [self.authPop removeFromSuperview];
+        self.authPop = nil;
+    }
+    self.authorized = NO;
+    self.authPresented = NO;
+
     UIAlertController *al = [UIAlertController
-        alertControllerWithTitle:@"授权失效"
+        alertControllerWithTitle:@"授权已到期"
                          message:reason ?: @"授权已到期，需重新激活"
                   preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) ws = self;
@@ -370,13 +391,30 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
                                            style:UIAlertActionStyleDefault
                                          handler:^(UIAlertAction * _Nonnull a) {
         __strong typeof(ws) ss = ws; if (!ss) return;
-        ss.authorized = NO;
-        ss.authPresented = NO;
         [ss presentAuthIfNeeded];
     }]];
+
+    // 找一个安全的 top（过滤正在 dismiss 的 VC）
     UIViewController *top = self;
-    while (top.presentedViewController) top = top.presentedViewController;
-    [top presentViewController:al animated:YES completion:nil];
+    while (top.presentedViewController && !top.presentedViewController.isBeingDismissed) {
+        top = top.presentedViewController;
+    }
+    if (top.isBeingPresented || top.isBeingDismissed) {
+        // 稍后再试
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self showAuthExpiredAlert:reason];
+        });
+        return;
+    }
+    if (![top isKindOfClass:[UIAlertController class]] && top.view.window) {
+        [top presentViewController:al animated:YES completion:nil];
+    }
+}
+
+- (void)dealloc {
+    // 【修复】VC 销毁时必须停心跳，防止 timer 回调访问已释放的 self
+    [[PCAuthManager sharedManager] stopHeartbeat];
 }
 
 #pragma mark - UI

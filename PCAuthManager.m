@@ -192,6 +192,9 @@ static NSString *PCHwModel(void) {
 @property (nonatomic, copy) NSString *cachedDeviceID;
 @property (nonatomic, strong) dispatch_source_t hbTimer;
 @property (nonatomic, copy)   void (^hbKick)(NSString *);
+@property (nonatomic, assign) NSTimeInterval hbInterval;
+@property (nonatomic, assign) BOOL observedAppState;
+@property (nonatomic, assign) NSTimeInterval lastVerifyAt;
 @end
 
 @implementation PCAuthManager
@@ -382,34 +385,32 @@ static NSString *PCHwModel(void) {
                          onKicked:(void(^)(NSString * _Nullable))onKicked {
     [self stopHeartbeat];
     self.hbKick = onKicked;
-    if (seconds < 30) seconds = 300; // 最小 30s，默认 5min
+    // 【修复】原实现写成 seconds=300，本意是最小 30s
+    if (seconds < 30) seconds = 30;
+    self.hbInterval = seconds;
+
     dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,
                                                  0, 0, dispatch_get_main_queue());
     uint64_t iv = (uint64_t)(seconds * NSEC_PER_SEC);
-    dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, iv), iv, (uint64_t)(10 * NSEC_PER_SEC));
+    // 【修复】启动即首次校验（DISPATCH_TIME_NOW），之后按 iv 周期；leeway 放宽到 5s 省电
+    dispatch_source_set_timer(t, DISPATCH_TIME_NOW, iv, (uint64_t)(5 * NSEC_PER_SEC));
     __weak typeof(self) ws = self;
     dispatch_source_set_event_handler(t, ^{
         __strong typeof(ws) ss = ws; if (!ss) return;
-        // 先做本地到期检查
-        NSTimeInterval exp = [ss cachedExpiresAt];
-        if (exp > 0 && [[NSDate date] timeIntervalSince1970] >= exp) {
-            if (ss.hbKick) ss.hbKick(@"授权已到期");
-            return;
-        }
-        // 服务器验证
-        [ss verifyWithCompletion:^(PCAuthStatus status, NSTimeInterval expiresAt, NSString * _Nullable message) {
-            if (status == PCAuthStatusExpired || status == PCAuthStatusInvalid
-                || status == PCAuthStatusDeviceMismatch
-                || status == PCAuthStatusSignatureBad
-                || status == PCAuthStatusNotActivated) {
-                [ss clearCache];
-                if (ss.hbKick) ss.hbKick(message ?: @"授权失效");
-            }
-            // 网络异常不踢人
-        }];
+        [ss _heartbeatPulse];
     });
     self.hbTimer = t;
     dispatch_resume(t);
+
+    // 【修复】注册前后台切换监听，进入前台立即再校验一次，
+    // 使得后台“踢下线”最长 1 个心跳周期内就能生效
+    if (!self.observedAppState) {
+        self.observedAppState = YES;
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(_onAppBecomeActive)
+                                                     name:UIApplicationDidBecomeActiveNotification
+                                                   object:nil];
+    }
 }
 
 - (void)stopHeartbeat {
@@ -418,6 +419,46 @@ static NSString *PCHwModel(void) {
         self.hbTimer = nil;
     }
     self.hbKick = nil;
+    if (self.observedAppState) {
+        [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                        name:UIApplicationDidBecomeActiveNotification
+                                                      object:nil];
+        self.observedAppState = NO;
+    }
+}
+
+- (void)_onAppBecomeActive {
+    // 前台恢复：若距离上次 verify 超过 20s 就立刻再跑一次
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (now - self.lastVerifyAt < 20) return;
+    if (!self.hbTimer) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self _heartbeatPulse];
+    });
+}
+
+- (void)_heartbeatPulse {
+    self.lastVerifyAt = [[NSDate date] timeIntervalSince1970];
+    // 先做本地到期检查
+    NSTimeInterval exp = [self cachedExpiresAt];
+    if (exp > 0 && [[NSDate date] timeIntervalSince1970] >= exp) {
+        [self clearCache];
+        if (self.hbKick) self.hbKick(@"授权已到期");
+        return;
+    }
+    __weak typeof(self) ws = self;
+    // 服务器验证
+    [self verifyWithCompletion:^(PCAuthStatus status, NSTimeInterval expiresAt, NSString * _Nullable message) {
+        __strong typeof(ws) ss = ws; if (!ss) return;
+        if (status == PCAuthStatusExpired || status == PCAuthStatusInvalid
+            || status == PCAuthStatusDeviceMismatch
+            || status == PCAuthStatusSignatureBad
+            || status == PCAuthStatusNotActivated) {
+            [ss clearCache];
+            if (ss.hbKick) ss.hbKick(message ?: @"授权失效");
+        }
+        // 网络异常不踢人
+    }];
 }
 
 #pragma mark - 远程菜单配置
