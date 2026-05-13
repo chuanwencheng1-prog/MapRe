@@ -42,6 +42,16 @@ typedef void(^PCPakCompletionBlock)(BOOL success,
 /// 取消当前下载
 - (void)cancel;
 
+#pragma mark - 清理已下载的 pak 文件
+
+/// 返回当前记录的所有已下载 pak 绝对路径（调试用）
++ (NSArray<NSString *> *)downloadedFilePaths;
+
+/// 只清理本插件曾下载过的 pak 文件。
+/// 不会误删用户原有的 pak；仅针对记录在本地清单中的路径。
+/// @return 实际被删除的文件个数
++ (NSUInteger)cleanAllDownloadedFiles;
+
 @end
 
 NS_ASSUME_NONNULL_END

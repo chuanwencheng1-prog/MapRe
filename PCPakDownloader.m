@@ -80,6 +80,11 @@ static BOOL const kPCOverwriteIfExists = YES;
 //                    配 置 区 结 束  —  以下是实现代码
 // ============================================================================
 
+// 已下载文件清单（跨启动持久化）—— 只记录本插件下载过的 pak 绝对路径。
+// 到期下线 / 后台踢下线 时仅针对清单中的路径执行删除，
+// 避免误删用户原有的 pak。
+static NSString *const kPCDownloadedFilesDefaultsKey = @"PCPersonalCenterUI.DownloadedPakPaths";
+
 
 @interface PCPakDownloader () <NSURLSessionDownloadDelegate>
 @property (nonatomic, strong) NSURLSession             *session;
@@ -411,6 +416,9 @@ didFinishDownloadingToURL:(NSURL *)location {
     }
 
     [self log:[NSString stringWithFormat:@"下载完成，已保存到：%@", finalPath]];
+    // 登记到已下载清单 —— 仅记录本插件落盘的文件，
+    // 在到期/后台踢下线时仅删除这些路径。
+    [PCPakDownloader _recordDownloadedPath:finalPath];
     [self finishSuccess:YES path:finalPath error:nil];
 }
 
@@ -421,6 +429,70 @@ didCompleteWithError:(NSError *)error {
         [self log:[NSString stringWithFormat:@"下载失败：%@", error.localizedDescription]];
         [self finishSuccess:NO path:nil error:error];
     }
+}
+
+#pragma mark - 已下载文件登记 / 清理
+
++ (NSArray<NSString *> *)downloadedFilePaths {
+    NSArray *arr = [[NSUserDefaults standardUserDefaults] arrayForKey:kPCDownloadedFilesDefaultsKey];
+    if (![arr isKindOfClass:[NSArray class]]) return @[];
+    NSMutableArray *out = [NSMutableArray arrayWithCapacity:arr.count];
+    for (id v in arr) {
+        if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) {
+            [out addObject:v];
+        }
+    }
+    return out;
+}
+
+/// 将 path 写入清单（去重）
++ (void)_recordDownloadedPath:(NSString *)path {
+    if (path.length == 0) return;
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSArray *cur = [ud arrayForKey:kPCDownloadedFilesDefaultsKey];
+    NSMutableArray *list = [NSMutableArray array];
+    if ([cur isKindOfClass:[NSArray class]]) {
+        for (id v in cur) {
+            if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0
+                && ![list containsObject:v]) {
+                [list addObject:v];
+            }
+        }
+    }
+    if (![list containsObject:path]) [list addObject:path];
+    [ud setObject:list forKey:kPCDownloadedFilesDefaultsKey];
+    [ud synchronize];
+}
+
++ (NSUInteger)cleanAllDownloadedFiles {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSArray *list = [ud arrayForKey:kPCDownloadedFilesDefaultsKey];
+    if (![list isKindOfClass:[NSArray class]] || list.count == 0) {
+        // 没有记录也要清除 key，保证状态干净
+        [ud removeObjectForKey:kPCDownloadedFilesDefaultsKey];
+        [ud synchronize];
+        return 0;
+    }
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSUInteger removed = 0;
+    for (id v in list) {
+        if (![v isKindOfClass:[NSString class]]) continue;
+        NSString *p = (NSString *)v;
+        if (p.length == 0) continue;
+        // 安全闸：仅删除 .pak 文件，防止清单被人为篡改为其它路径
+        if (![[p.lowercaseString pathExtension] isEqualToString:@"pak"]) continue;
+        if (![fm fileExistsAtPath:p]) continue;
+        NSError *err = nil;
+        if ([fm removeItemAtPath:p error:&err]) {
+            removed++;
+            NSLog(@"[PersonalCenterUI][Downloader] 已清理已下载 pak：%@", p);
+        } else {
+            NSLog(@"[PersonalCenterUI][Downloader] 清理 pak 失败：%@ (%@)", p, err.localizedDescription);
+        }
+    }
+    [ud removeObjectForKey:kPCDownloadedFilesDefaultsKey];
+    [ud synchronize];
+    return removed;
 }
 
 @end
