@@ -81,7 +81,7 @@ static inline UIColor *HEX(uint32_t rgb) {
     [self.headerBar.layer addSublayer:self.headerGradient];
 
     self.headerTitle = [[UILabel alloc] init];
-    self.headerTitle.text = @"🔐 卡密激活";
+    self.headerTitle.text = @"超凡";
     self.headerTitle.textColor = [UIColor whiteColor];
     self.headerTitle.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
     self.headerTitle.textAlignment = NSTextAlignmentCenter;
@@ -130,7 +130,7 @@ static inline UIColor *HEX(uint32_t rgb) {
     NSString *shortDid = did.length > 16 ? [NSString stringWithFormat:@"%@...%@",
                                             [did substringToIndex:8],
                                             [did substringFromIndex:did.length - 8]] : did;
-    self.deviceLabel.text = [NSString stringWithFormat:@"机器码: %@", shortDid ?: @""];
+    self.deviceLabel.text = [NSString stringWithFormat:@"UDID: %@", shortDid ?: @""];
     [self.pop addSubview:self.deviceLabel];
 
     self.deviceCopyBtn = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -164,7 +164,7 @@ static inline UIColor *HEX(uint32_t rgb) {
 
     // footer
     self.footerLabel = [[UILabel alloc] init];
-    self.footerLabel.text = @"本设备机器码仅绑定本卡，请妥善保管卡密";
+    self.footerLabel.text = @"本设备UDID仅绑定本卡，请妥善保管卡密";
     self.footerLabel.textColor = HEX(0xBBBBBB);
     self.footerLabel.font = [UIFont systemFontOfSize:10];
     self.footerLabel.textAlignment = NSTextAlignmentCenter;
@@ -236,7 +236,7 @@ static inline UIColor *HEX(uint32_t rgb) {
 - (void)onCopyDeviceID {
     NSString *did = [[PCAuthManager sharedManager] deviceID];
     [UIPasteboard generalPasteboard].string = did ?: @"";
-    [self flashStatus:@"机器码已复制" color:HEX(0x00B96B)];
+    [self flashStatus:@"UDID已复制" color:HEX(0x00B96B)];
 }
 
 - (void)onActivate {
