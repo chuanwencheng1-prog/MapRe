@@ -52,6 +52,6 @@ jobs:
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: dsiOS41541-package
+        name: ddddds885-package
         path: packages/*.deb
         if-no-files-found: warn
