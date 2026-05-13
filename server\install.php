@@ -105,6 +105,31 @@ if ($step === 2 && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 `value` TEXT
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
+            // 菜单（一级）
+            $pdo->exec("CREATE TABLE IF NOT EXISTS `{$p}menus` (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                app_id VARCHAR(64) NOT NULL DEFAULT 'pcui_default',
+                title VARCHAR(64) NOT NULL,
+                icon  VARCHAR(16) NOT NULL DEFAULT '📋',
+                color VARCHAR(16) NOT NULL DEFAULT '#1677FF',
+                sort  INT NOT NULL DEFAULT 0,
+                status TINYINT NOT NULL DEFAULT 1,
+                created_at INT UNSIGNED NOT NULL,
+                INDEX idx_app (app_id, status, sort)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+            // 菜单项（二级，含直链URL）
+            $pdo->exec("CREATE TABLE IF NOT EXISTS `{$p}menu_items` (
+                id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                menu_id INT UNSIGNED NOT NULL,
+                title VARCHAR(64) NOT NULL,
+                url   VARCHAR(1024) DEFAULT NULL,
+                sort  INT NOT NULL DEFAULT 0,
+                status TINYINT NOT NULL DEFAULT 1,
+                created_at INT UNSIGNED NOT NULL,
+                INDEX idx_menu (menu_id, status, sort)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
             $_SESSION['install_db'] = $db;
             header('Location: install.php?step=3'); exit;
         } catch (Exception $e) {

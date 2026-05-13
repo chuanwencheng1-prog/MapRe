@@ -15,14 +15,21 @@ $u = pc_admin_user();
 <link rel="stylesheet" href="../assets/admin.css">
 </head>
 <body>
+<!-- 移动端顶栏 -->
+<header class="mobile-top">
+  <button class="menu-btn" id="pcMenuBtn" aria-label="菜单">☰</button>
+  <span class="mobile-title">🔐 <?= htmlspecialchars($cfg['site_name'] ?? '卡密授权') ?></span>
+</header>
+<div class="side-mask" id="pcSideMask"></div>
 <div class="layout">
-  <aside class="side">
+  <aside class="side" id="pcSide">
     <div class="brand">🔐 卡密授权</div>
     <nav>
       <a href="dashboard.php" class="<?= $_page==='dash'?'active':'' ?>">📊 仪表盘</a>
       <a href="cards.php"     class="<?= $_page==='cards'?'active':'' ?>">🎫 卡密管理</a>
       <a href="generate.php"  class="<?= $_page==='gen'?'active':'' ?>">➕ 批量生成</a>
       <a href="devices.php"   class="<?= $_page==='dev'?'active':'' ?>">📱 设备管理</a>
+      <a href="menus.php"     class="<?= $_page==='menus'?'active':'' ?>">🧩 菜单配置</a>
       <a href="logs.php"      class="<?= $_page==='logs'?'active':'' ?>">📝 日志</a>
       <a href="settings.php"  class="<?= $_page==='set'?'active':'' ?>">⚙️ 系统设置</a>
     </nav>

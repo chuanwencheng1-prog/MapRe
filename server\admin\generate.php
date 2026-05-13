@@ -57,7 +57,7 @@ include __DIR__ . '/../includes/header.php';
         <div class="field">
           <label>卡密类型</label>
           <div class="radio-group">
-            <?php foreach (['hour'=>'小时卡','day'=>'天卡','week'=>'周卡','month'=>'月卡','year'=>'年卡','perm'=>'永久卡'] as $k=>$v): ?>
+            <?php foreach (pc_type_list() as $k=>$v): ?>
               <label class="radio"><input type="radio" name="type" value="<?= $k ?>" <?= $k==='day'?'checked':'' ?>><span><?= $v ?></span></label>
             <?php endforeach; ?>
           </div>

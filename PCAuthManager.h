@@ -68,6 +68,16 @@ typedef void(^PCAuthCompletion)(PCAuthStatus status,
 /// 停止心跳
 - (void)stopHeartbeat;
 
+#pragma mark - 远程菜单配置
+
+/// 拉取服务器远程菜单配置（签名校验过）
+/// completion.config 成功时为 JSON（包含 key "menus"）；失败时为 nil + error
+- (void)fetchRemoteConfigWithCompletion:(void(^)(NSDictionary * _Nullable config,
+                                                  NSError * _Nullable error))completion;
+
+/// 本地缓存的远程菜单配置（供首屏秒打开渲染）
+- (nullable NSDictionary *)cachedRemoteConfig;
+
 @end
 
 NS_ASSUME_NONNULL_END

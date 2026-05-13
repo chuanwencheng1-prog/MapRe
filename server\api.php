@@ -64,7 +64,60 @@ if ($app_id !== pc_cfg('app_id'))       api_out(1007, 'APP_ID 不匹配');
 // 防重放（±10 分钟）
 if (abs(time() - $ts) > 600) api_out(1008, '时间戳失效');
 
-/* ---------------- 业务处理 ---------------- */
+/* ---------------- action=config：返回 iOS 远程菜单 ---------------- */
+if ($action === 'config') {
+    try {
+        $db = pc_db();
+        // 容错：表不存在时返回空配置（iOS 端将回退本地默认）
+        $probe = $db->query("SHOW TABLES LIKE ".$db->quote(str_replace('`','',pc_t('menus'))));
+        if (!$probe || !$probe->fetchColumn()) {
+            $payload = ['app_id'=>$app_id, 'version'=>0, 'menus'=>[]];
+        } else {
+            $ms = $db->prepare("SELECT id,title,icon,color,sort FROM ".pc_t('menus')." WHERE app_id=? AND status=1 ORDER BY sort ASC, id ASC");
+            $ms->execute([$app_id]);
+            $ms = $ms->fetchAll();
+            $menus = [];
+            if ($ms) {
+                $ids = implode(',', array_map(function($m){ return (int)$m['id']; }, $ms));
+                $its = $db->query("SELECT id,menu_id,title,url,sort FROM ".pc_t('menu_items')." WHERE menu_id IN ($ids) AND status=1 ORDER BY sort ASC, id ASC")->fetchAll();
+                $byMid = [];
+                foreach ($its as $it) $byMid[(int)$it['menu_id']][] = [
+                    'id'   => (int)$it['id'],
+                    'title'=> (string)$it['title'],
+                    'url'  => (string)($it['url'] ?? ''),
+                ];
+                foreach ($ms as $m) {
+                    $menus[] = [
+                        'id'    => (int)$m['id'],
+                        'title' => (string)$m['title'],
+                        'icon'  => (string)$m['icon'],
+                        'color' => (string)$m['color'],
+                        'items' => $byMid[(int)$m['id']] ?? [],
+                    ];
+                }
+            }
+            // 简易 version = 最大更新标记（menus.created_at 最大值 + 总条数 → 便于缓存比对）
+            $payload = [
+                'app_id' => $app_id,
+                'version'=> count($menus) * 1000 + (int)$db->query("SELECT COALESCE(MAX(created_at),0) FROM ".pc_t('menus')." WHERE app_id=".$db->quote($app_id))->fetchColumn(),
+                'menus'  => $menus,
+            ];
+        }
+
+        // RSA 签名，防中间人改包
+        $cfgJson = json_encode($payload, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+        $signMsg = $app_id . '|' . $deviceId . '|config|' . md5($cfgJson);
+        $sign    = pc_rsa_sign($signMsg);
+
+        pc_log('api_config_ok', null, $deviceId, ['menus'=>count($payload['menus'])]);
+        api_out(0, 'ok', ['config'=>$payload, 'sign'=>$sign]);
+    } catch (Exception $e) {
+        pc_log('api_config_err', null, $deviceId, $e->getMessage());
+        api_out(500, '配置读取失败');
+    }
+}
+
+/* ---------------- 业务处理（activate/verify） ---------------- */
 try {
     $db = pc_db();
 

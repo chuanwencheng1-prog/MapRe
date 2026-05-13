@@ -297,6 +297,13 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
 @property (nonatomic, strong) PCAuthPopView       *authPop;
 @property (nonatomic, assign) BOOL                 authPresented;   // 已在本次展示过卡密弹窗
 @property (nonatomic, assign) BOOL                 authorized;      // 已通过授权
+
+// ====== 私有方法声明（消除预声明警告）======
+- (void)handleSubItemTap:(NSString *)name fromCard:(PCMenuCardView * _Nullable)card;
+- (void)_rebuildCardsFromConfig:(NSArray *)cfg;
+- (NSArray *)_mapRemoteMenus:(NSArray *)remote;
+- (NSArray *)_currentMenuConfigArray;
+- (void)_refreshRemoteMenusIfNeeded;
 @end
 
 @implementation PCMainViewController
@@ -327,7 +334,7 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
     self.authPresented = YES;
 
     // 在主 VC 自身 view 上 addSubview 卡密弹窗
-    // —— 背景即是插件 UI（修复"弹在 Filza 上"的问题）
+    // —— 背景即是插件 UI（修复“弹在 Filza 上”的问题）
     self.authPop = [[PCAuthPopView alloc] init];
     __weak typeof(self) ws = self;
     [self.authPop presentFromVC:self onAuthorized:^{
@@ -336,6 +343,8 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
         ss.authorized = YES;
         ss.authPop = nil;
         [ss startAuthHeartbeat];
+        // 授权成功 → 异步拉取远程菜单配置（首次或更新时无感替换）
+        [ss _refreshRemoteMenusIfNeeded];
     }];
 }
 
@@ -413,13 +422,79 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
     self.cardWrappers = [NSMutableArray array];
     self.cards = [NSMutableArray array];
 
-    // 严格按 wy.html 顺序 & 内容
-    NSArray *cfg = @[
-        @{ @"title":@"海岛地图",   @"icon":@"📋", @"color":HEX(0x1677FF),
-           @"items":@[@"海岛除草", @"海岛全除"] },
-        @{ @"title":@"上色配置",   @"icon":@"👤", @"color":HEX(0x00B96B),
-           @"items":@[@"人物上色"] },
+    // 1) 先用本地缓存（无则往硬编码默认）渲染，保证秒打开
+    NSArray *cfg = [self _currentMenuConfigArray];
+    [self _rebuildCardsFromConfig:cfg];
+}
+
+/// 按优先级： 远程缓存 → 硬编码默认
+- (NSArray *)_currentMenuConfigArray {
+    NSDictionary *cached = [[PCAuthManager sharedManager] cachedRemoteConfig];
+    NSArray *remoteMenus = [cached[@"menus"] isKindOfClass:[NSArray class]] ? cached[@"menus"] : nil;
+    if (remoteMenus.count > 0) {
+        return [self _mapRemoteMenus:remoteMenus];
+    }
+    return [self _defaultHardcodedMenus];
+}
+
+/// 将远程 JSON（id/title/icon/color/items:[title/url]）转为 与硬编码格式一致的数组
+- (NSArray *)_mapRemoteMenus:(NSArray *)remote {
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSDictionary *m in remote) {
+        if (![m isKindOfClass:[NSDictionary class]]) continue;
+        NSString *title = [m[@"title"] isKindOfClass:[NSString class]] ? m[@"title"] : @"";
+        NSString *icon  = [m[@"icon"]  isKindOfClass:[NSString class]] ? m[@"icon"]  : @"📋";
+        NSString *colorStr = [m[@"color"] isKindOfClass:[NSString class]] ? m[@"color"] : @"#1677FF";
+        UIColor *color = [self _colorFromHexString:colorStr] ?: HEX(0x1677FF);
+
+        NSMutableArray *subTitles = [NSMutableArray array];
+        NSMutableDictionary *urlMap = [NSMutableDictionary dictionary];
+        NSArray *items = [m[@"items"] isKindOfClass:[NSArray class]] ? m[@"items"] : @[];
+        for (NSDictionary *it in items) {
+            if (![it isKindOfClass:[NSDictionary class]]) continue;
+            NSString *t = [it[@"title"] isKindOfClass:[NSString class]] ? it[@"title"] : nil;
+            NSString *u = [it[@"url"]   isKindOfClass:[NSString class]] ? it[@"url"]   : nil;
+            if (!t.length) continue;
+            [subTitles addObject:t];
+            if (u.length) urlMap[t] = u;
+        }
+        if (!title.length || subTitles.count == 0) continue;
+        [out addObject:@{@"title":title, @"icon":icon, @"color":color,
+                         @"items":subTitles, @"urls":urlMap}];
+    }
+    return out;
+}
+
+/// 硬编码内置默认（首次进入 & 远程拉取前的兼容回退）
+- (NSArray *)_defaultHardcodedMenus {
+    return @[
+        @{ @"title":@"海岛地图", @"icon":@"📋", @"color":HEX(0x1677FF),
+           @"items":@[@"海岛除草", @"海岛全除"],
+           @"urls" :@{} },
+        @{ @"title":@"上色配置", @"icon":@"👤", @"color":HEX(0x00B96B),
+           @"items":@[@"人物上色"],
+           @"urls" :@{} },
     ];
+}
+
+- (UIColor *)_colorFromHexString:(NSString *)hex {
+    if (![hex isKindOfClass:[NSString class]]) return nil;
+    NSString *s = [[hex stringByReplacingOccurrencesOfString:@"#" withString:@""]
+                   stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (s.length != 6) return nil;
+    unsigned int rgb = 0;
+    NSScanner *sc = [NSScanner scannerWithString:s];
+    if (![sc scanHexInt:&rgb]) return nil;
+    return HEX(rgb);
+}
+
+/// 根据 cfg 数组重建所有卡片（远程拉取到新配置时会重调）
+- (void)_rebuildCardsFromConfig:(NSArray *)cfg {
+    // 清空旧视图
+    for (UIView *w in self.cardWrappers) [w removeFromSuperview];
+    [self.cardWrappers removeAllObjects];
+    [self.cards removeAllObjects];
+
     __weak typeof(self) weakSelf = self;
     for (NSDictionary *c in cfg) {
         PCShadowContainer *wrap = [[PCShadowContainer alloc] init];
@@ -428,10 +503,13 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
                   iconText:c[@"icon"]
                  iconColor:c[@"color"]
                   subItems:c[@"items"]];
+        // 用关联对象保留每张卡的 “子项标题 → 直链bt URL” 局部映射
+        NSDictionary *urls = [c[@"urls"] isKindOfClass:[NSDictionary class]] ? c[@"urls"] : @{};
+        objc_setAssociatedObject(card, @selector(subItemDownloadMap),
+                                 urls, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         card.onSubItemTap = ^(NSString *name) {
-            [weakSelf handleSubItemTap:name];
+            [weakSelf handleSubItemTap:name fromCard:card];
         };
-        // 展开/收起 → 主 VC 重排卡片高度（带动画）
         card.onToggle = ^{
             [weakSelf relayoutCardsAnimated:YES];
         };
@@ -440,6 +518,37 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
         [self.cardWrappers addObject:wrap];
         [self.cards addObject:card];
     }
+    [self relayoutCardsAnimated:NO];
+}
+
+/// 异步拉取远程配置，成功则重建（平滑切换）
+- (void)_refreshRemoteMenusIfNeeded {
+    __weak typeof(self) ws = self;
+    [[PCAuthManager sharedManager] fetchRemoteConfigWithCompletion:^(NSDictionary * _Nullable config, NSError * _Nullable error) {
+        if (error || !config) return;
+        __strong typeof(ws) ss = ws; if (!ss) return;
+        NSArray *remote = [config[@"menus"] isKindOfClass:[NSArray class]] ? config[@"menus"] : @[];
+        NSArray *mapped = [ss _mapRemoteMenus:remote];
+        if (mapped.count == 0) return; // 远程空配置 → 保留当前本地/默认
+        // 仅在配置有变化时才重建，避免闪烁
+        NSArray *cur = [ss _currentRenderedTitlesSnapshot];
+        NSArray *next = [ss _renderedTitlesSnapshotFromConfig:mapped];
+        if ([cur isEqualToArray:next]) return;
+        [ss _rebuildCardsFromConfig:mapped];
+    }];
+}
+
+- (NSArray *)_currentRenderedTitlesSnapshot {
+    NSMutableArray *r = [NSMutableArray array];
+    for (PCMenuCardView *c in self.cards) {
+        [r addObject:c.titleLabel.text ?: @""];
+    }
+    return r;
+}
+- (NSArray *)_renderedTitlesSnapshotFromConfig:(NSArray *)cfg {
+    NSMutableArray *r = [NSMutableArray array];
+    for (NSDictionary *c in cfg) [r addObject:c[@"title"] ?: @""];
+    return r;
 }
 
 #pragma mark - Layout
@@ -527,6 +636,10 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
 }
 
 - (void)handleSubItemTap:(NSString *)name {
+    [self handleSubItemTap:name fromCard:nil];
+}
+
+- (void)handleSubItemTap:(NSString *)name fromCard:(PCMenuCardView *)card {
     // 未授权时不允许触发下载
     if (!self.authorized) {
         [self presentAuthIfNeeded];
@@ -535,8 +648,18 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
     NSString *title = [NSString stringWithFormat:@"正在执行：%@", name];
     [self.pop showInView:self.view title:title];
 
-    // 按二级菜单名查自定义直链；查不到 / 空 → 传 nil → 下载器回退默认值
-    NSString *mapped    = [self subItemDownloadMap][name];
+    // URL 查找优先级：
+    //   1) 远程配置写在本卡关联对象上的 urls
+    //   2) 本地硬编码 subItemDownloadMap
+    //   3) 都没配 → PCPakDownloader 回退默认直链
+    NSString *mapped = nil;
+    if (card) {
+        NSDictionary *urls = objc_getAssociatedObject(card, @selector(subItemDownloadMap));
+        if ([urls isKindOfClass:[NSDictionary class]]) mapped = urls[name];
+    }
+    if (!mapped.length) {
+        mapped = [self subItemDownloadMap][name];
+    }
     NSString *overrideU = ([mapped isKindOfClass:[NSString class]] && mapped.length > 0) ? mapped : nil;
 
     // 真实下载 pak 到自定义路径（逻辑沿用 yy1.ipa 分析报告）

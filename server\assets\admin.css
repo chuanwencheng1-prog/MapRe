@@ -130,3 +130,79 @@ body.login-page{background:linear-gradient(135deg,#1677ff 0%,#0958d9 100%);min-h
 /* Toast */
 .toast{position:fixed;top:24px;left:50%;transform:translate(-50%,-60px);background:#323232;color:#fff;padding:10px 22px;border-radius:22px;font-size:13px;opacity:0;transition:all .3s;z-index:9999;pointer-events:none;box-shadow:0 6px 16px rgba(0,0,0,.2)}
 .toast.show{opacity:1;transform:translate(-50%,0)}
+
+/* ===== 移动端顶栏与抽屉遵罩 ===== */
+.mobile-top{display:none;position:sticky;top:0;z-index:60;background:linear-gradient(135deg,#1677ff,#0958d9);color:#fff;padding:10px 14px;align-items:center;gap:10px;box-shadow:0 2px 10px rgba(9,88,217,.25)}
+.mobile-top .menu-btn{background:rgba(255,255,255,.18);border:0;color:#fff;font-size:20px;width:36px;height:36px;border-radius:8px;cursor:pointer;line-height:1}
+.mobile-top .menu-btn:active{background:rgba(255,255,255,.3)}
+.mobile-top .mobile-title{font-size:15px;font-weight:600}
+.side-mask{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:70;opacity:0;transition:opacity .25s}
+.side-mask.show{display:block;opacity:1}
+
+/* ===== 菜单配置页专用 ===== */
+.menu-card .panel-hd{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.menu-card .menu-icon{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;color:#fff;font-size:14px;margin-right:6px;flex-shrink:0}
+.menu-card .menu-title{font-size:15px;font-weight:600}
+.menu-card .menu-card-actions{margin-left:auto}
+.sub-items .url-cell{max-width:380px;word-break:break-all;white-space:normal}
+
+/* ===== 响应式适配（≤ 900px 侧边栏收起为抽屉） ===== */
+@media (max-width: 900px){
+  .mobile-top{display:flex}
+  .layout{flex-direction:column;min-height:calc(100vh - 58px)}
+  .side{position:fixed;left:0;top:0;bottom:0;width:240px;transform:translateX(-100%);transition:transform .28s ease;z-index:80;box-shadow:4px 0 20px rgba(0,0,0,.25)}
+  .side.show{transform:translateX(0)}
+  .main{padding:16px;width:100%}
+  .page-title{font-size:18px;margin-bottom:14px}
+
+  .cards-grid{grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:14px}
+  .stat-card{padding:14px 16px;border-radius:12px}
+  .stat-num{font-size:22px}
+  .stat-label{font-size:12px}
+  .stat-sub{font-size:11px}
+
+  .two-col{grid-template-columns:1fr;gap:14px;margin-bottom:14px}
+  .panel-hd{padding:12px 14px;font-size:13px}
+  .panel-bd{padding:12px 14px}
+  .grid2{grid-template-columns:1fr}
+
+  .filter-bar{gap:6px}
+  .filter-bar input,.filter-bar select{flex:1 1 45%;min-width:0;padding:8px 10px;font-size:13px}
+  .filter-bar .btn{flex:0 0 auto}
+  .filter-bar form{flex:1 1 100%;display:flex;gap:6px;flex-wrap:wrap}
+
+  .bulk-bar{flex-wrap:wrap;gap:6px;font-size:12px}
+  .bulk-bar .btn{flex:1 1 auto;min-width:70px}
+
+  /* 表格横向滚动 + 字体缩小 */
+  .panel{overflow:auto}
+  .tbl.list{min-width:720px;font-size:12px}
+  .tbl th,.tbl td{padding:8px 10px}
+  .tbl.kv th{width:90px;font-size:12px}
+
+  .radio-group{gap:6px}
+  .radio{min-width:70px}
+  .radio span{padding:8px 6px;font-size:12px}
+
+  .pager a{min-width:28px;height:28px;line-height:28px;font-size:12px}
+  .codebox{font-size:11px}
+  .sub-items .url-cell{max-width:160px}
+
+  /* 登录页 */
+  .login-box{border-radius:16px}
+  .login-hd{padding:24px 24px 16px}
+  .login-form{padding:8px 24px 24px}
+}
+
+@media (max-width: 480px){
+  .cards-grid{grid-template-columns:1fr 1fr;gap:8px}
+  .stat-card{padding:12px 14px}
+  .stat-num{font-size:20px}
+  .main{padding:12px}
+  .bars{height:120px}
+  .bar-num,.bar-label{font-size:10px}
+  .tbl.list{min-width:560px}
+  .menu-card .panel-hd small{flex:1 1 100%;font-size:11px;color:#999;padding-top:4px}
+  .menu-card .panel-hd span[style*="float:right"]{margin-left:0;width:100%;float:none !important;display:flex;flex-wrap:wrap;gap:6px}
+  .menu-card .panel-hd .btn{flex:1 1 auto}
+}

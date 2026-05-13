@@ -31,4 +31,17 @@
     var t = el.getAttribute('data-copy') || el.textContent.trim();
     if (copyText(t)) showToast('已复制：' + (t.length > 30 ? t.slice(0,30)+'…' : t));
   });
+
+  // 侧边栏抽屉（移动端）
+  var side = document.getElementById('pcSide');
+  var mask = document.getElementById('pcSideMask');
+  var btn  = document.getElementById('pcMenuBtn');
+  function openSide(){ if(side){side.classList.add('show');} if(mask){mask.classList.add('show');} }
+  function closeSide(){ if(side){side.classList.remove('show');} if(mask){mask.classList.remove('show');} }
+  if (btn)  btn.addEventListener('click', function(e){ e.stopPropagation(); (side && side.classList.contains('show')) ? closeSide() : openSide(); });
+  if (mask) mask.addEventListener('click', closeSide);
+  // 点导航链接自动关闭
+  document.querySelectorAll('.side nav a').forEach(function(a){ a.addEventListener('click', closeSide); });
+  // 窗口变实时恢复案桌态
+  window.addEventListener('resize', function(){ if (window.innerWidth > 900) closeSide(); });
 })();

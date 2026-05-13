@@ -17,21 +17,30 @@ function pc_gen_card($len = 16) {
 function pc_type_duration($type, $amount = 1) {
     $amount = max(1, (int)$amount);
     switch ($type) {
-        case 'hour':  return 3600 * $amount;
-        case 'day':   return 86400 * $amount;
-        case 'week':  return 86400 * 7 * $amount;
-        case 'month': return 86400 * 30 * $amount;
-        case 'year':  return 86400 * 365 * $amount;
-        case 'perm':  return 86400 * 365 * 100; // 永久 = 100 年
-        default:      return 86400 * $amount;
+        case 'minute': return 60 * $amount;
+        case 'hour':   return 3600 * $amount;
+        case 'day':    return 86400 * $amount;
+        case 'week':   return 86400 * 7 * $amount;
+        case 'month':  return 86400 * 30 * $amount;
+        case 'year':   return 86400 * 365 * $amount;
+        case 'perm':   return 86400 * 365 * 100; // 永久 = 100 年
+        default:       return 86400 * $amount;
     }
 }
 
 function pc_type_label($type) {
     return [
-        'hour'=>'小时卡','day'=>'天卡','week'=>'周卡',
+        'minute'=>'分钟卡','hour'=>'小时卡','day'=>'天卡','week'=>'周卡',
         'month'=>'月卡','year'=>'年卡','perm'=>'永久卡'
     ][$type] ?? $type;
+}
+
+/** 所有卡密类型（生成页、筛选页共用，改这里即可同步） */
+function pc_type_list() {
+    return [
+        'minute'=>'分钟卡','hour'=>'小时卡','day'=>'天卡',
+        'week'=>'周卡','month'=>'月卡','year'=>'年卡','perm'=>'永久卡'
+    ];
 }
 
 function pc_client_ip() {

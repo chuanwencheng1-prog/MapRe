@@ -87,7 +87,7 @@ include __DIR__ . '/../includes/header.php';
   </select>
   <select name="type">
     <option value="">全部类型</option>
-    <?php foreach (['hour','day','week','month','year','perm'] as $t): ?>
+    <?php foreach (array_keys(pc_type_list()) as $t): ?>
       <option value="<?= $t ?>" <?= $type===$t?'selected':'' ?>><?= pc_type_label($t) ?></option>
     <?php endforeach; ?>
   </select>
