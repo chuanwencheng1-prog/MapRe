@@ -84,6 +84,7 @@ static NSString *PCSha256Hex(NSString *input) {
     return s;
 }
 
+static NSData *PCSha256Raw(NSData *data) __attribute__((unused));
 static NSData *PCSha256Raw(NSData *data) {
     unsigned char h[CC_SHA256_DIGEST_LENGTH] = {0};
     CC_SHA256(data.bytes, (CC_LONG)data.length, h);
