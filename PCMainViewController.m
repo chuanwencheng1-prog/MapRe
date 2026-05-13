@@ -330,14 +330,6 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
 - (void)presentAuthIfNeeded {
     if (self.authorized) return;
     if (self.authPresented && self.authPop && self.authPop.superview) return;
-    // 【修复】确保本 VC 视图已挂到 window，避免未挂窗下 addSubview 导致的异常
-    if (!self.isViewLoaded || !self.view.window) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [self presentAuthIfNeeded];
-        });
-        return;
-    }
     self.authPresented = YES;
 
     // 在主 VC 自身 view 上 addSubview 卡密弹窗

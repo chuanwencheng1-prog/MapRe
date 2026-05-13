@@ -301,27 +301,14 @@ static inline UIColor *HEX(uint32_t rgb) {
 #pragma mark - Present / Dismiss
 
 - (void)presentFromVC:(UIViewController *)parentVC onAuthorized:(void (^)(void))onAuthorized {
-    if (!parentVC || !parentVC.isViewLoaded) return;
+    if (!parentVC) return;
     self.hostVC = parentVC;
     self.onAuthorized = onAuthorized;
     UIView *container = parentVC.view;
-    // 【修复】容器必须已挂到 window，避免早期注入时 addSubview 到孤儿视图
-    if (!container || !container.window) {
-        __weak typeof(self) ws = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            __strong typeof(ws) ss = ws; if (!ss) return;
-            [ss presentFromVC:parentVC onAuthorized:onAuthorized];
-        });
-        return;
-    }
-    // 避免重复 addSubview
-    if (self.superview == container) {
-        return;
-    }
-    if (self.superview) {
-        [self removeFromSuperview];
-    }
+    if (!container) return;
+    // 避免重复 addSubview（不做 window 检查，避免起步到视图挂窗前调用转成无限循环）
+    if (self.superview == container) return;
+    if (self.superview) [self removeFromSuperview];
     self.frame = container.bounds;
     self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [container addSubview:self];
