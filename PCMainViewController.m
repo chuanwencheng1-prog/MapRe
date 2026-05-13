@@ -507,8 +507,13 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
         NSDictionary *urls = [c[@"urls"] isKindOfClass:[NSDictionary class]] ? c[@"urls"] : @{};
         objc_setAssociatedObject(card, @selector(subItemDownloadMap),
                                  urls, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        __weak PCMenuCardView *weakCard = card;
         card.onSubItemTap = ^(NSString *name) {
-            [weakSelf handleSubItemTap:name fromCard:card];
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            PCMenuCardView *strongCard = weakCard;
+            if (strongSelf && strongCard) {
+                [strongSelf handleSubItemTap:name fromCard:strongCard];
+            }
         };
         card.onToggle = ^{
             [weakSelf relayoutCardsAnimated:YES];
