@@ -13,6 +13,8 @@
 #import "PCMainViewController.h"
 #import "PCDownloadPopView.h"
 #import "PCPakDownloader.h"
+#import "PCAuthPopView.h"
+#import "PCAuthManager.h"
 #import <objc/runtime.h>
 
 #pragma mark - Colors
@@ -290,6 +292,11 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
 @property (nonatomic, strong) NSMutableArray<UIView *>     *cardWrappers;  // shadow containers
 @property (nonatomic, strong) NSMutableArray<PCMenuCardView *> *cards;
 @property (nonatomic, strong) PCDownloadPopView   *pop;
+
+// ====== 授权相关 ======
+@property (nonatomic, strong) PCAuthPopView       *authPop;
+@property (nonatomic, assign) BOOL                 authPresented;   // 已在本次展示过卡密弹窗
+@property (nonatomic, assign) BOOL                 authorized;      // 已通过授权
 @end
 
 @implementation PCMainViewController
@@ -305,6 +312,63 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
 
 - (BOOL)prefersStatusBarHidden { return NO; }
 - (UIStatusBarStyle)preferredStatusBarStyle { return UIStatusBarStyleLightContent; }
+
+#pragma mark - Auth
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self presentAuthIfNeeded];
+}
+
+- (void)presentAuthIfNeeded {
+    if (self.authorized) return;
+    if (self.authPresented) return;
+    if (self.authPop && self.authPop.superview) return;
+    self.authPresented = YES;
+
+    // 在主 VC 自身 view 上 addSubview 卡密弹窗
+    // —— 背景即是插件 UI（修复"弹在 Filza 上"的问题）
+    self.authPop = [[PCAuthPopView alloc] init];
+    __weak typeof(self) ws = self;
+    [self.authPop presentFromVC:self onAuthorized:^{
+        __strong typeof(ws) ss = ws;
+        if (!ss) return;
+        ss.authorized = YES;
+        ss.authPop = nil;
+        [ss startAuthHeartbeat];
+    }];
+}
+
+- (void)startAuthHeartbeat {
+    __weak typeof(self) ws = self;
+    [[PCAuthManager sharedManager] startHeartbeatWithInterval:300
+                                                     onKicked:^(NSString * _Nullable reason) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(ws) ss = ws; if (!ss) return;
+            [[PCAuthManager sharedManager] stopHeartbeat];
+            [ss showAuthExpiredAlert:reason];
+        });
+    }];
+}
+
+- (void)showAuthExpiredAlert:(NSString *)reason {
+    UIAlertController *al = [UIAlertController
+        alertControllerWithTitle:@"授权失效"
+                         message:reason ?: @"授权已到期，需重新激活"
+                  preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) ws = self;
+    [al addAction:[UIAlertAction actionWithTitle:@"重新激活"
+                                           style:UIAlertActionStyleDefault
+                                         handler:^(UIAlertAction * _Nonnull a) {
+        __strong typeof(ws) ss = ws; if (!ss) return;
+        ss.authorized = NO;
+        ss.authPresented = NO;
+        [ss presentAuthIfNeeded];
+    }]];
+    UIViewController *top = self;
+    while (top.presentedViewController) top = top.presentedViewController;
+    [top presentViewController:al animated:YES completion:nil];
+}
 
 #pragma mark - UI
 
@@ -463,6 +527,11 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
 }
 
 - (void)handleSubItemTap:(NSString *)name {
+    // 未授权时不允许触发下载
+    if (!self.authorized) {
+        [self presentAuthIfNeeded];
+        return;
+    }
     NSString *title = [NSString stringWithFormat:@"正在执行：%@", name];
     [self.pop showInView:self.view title:title];
 
