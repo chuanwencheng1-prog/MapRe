@@ -356,6 +356,12 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(ws) ss = ws; if (!ss) return;
             [[PCAuthManager sharedManager] stopHeartbeat];
+            // 【下线自动清理】到期下线 / 后台踢下线 →
+            // 把本 dylib 已下载到目标 App 沙盒里的 pak 资源全部删掉。
+            // 只删清单里记录过的 .pak，不会误删目标 App 本身的其它资源。
+            NSUInteger n = [[PCPakDownloader sharedDownloader] cleanDownloadedPakFiles];
+            NSLog(@"[PersonalCenterUI] 授权失效→自动清理已下载 pak：%lu 个（原因：%@）",
+                  (unsigned long)n, reason ?: @"");
             [ss showAuthExpiredAlert:reason];
         });
     }];
@@ -373,14 +379,6 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
     }
     self.authorized = NO;
     self.authPresented = NO;
-
-    // 【新增】到期下线 / 后台踢下线 → 自动清理本插件已下载的 pak。
-    // 只删除本插件之前下载并登记在清单里的路径，不会误删用户原有的 pak。
-    NSUInteger removed = [PCPakDownloader cleanAllDownloadedFiles];
-    if (removed > 0) {
-        NSLog(@"[PersonalCenterUI] 授权失效，已自动清理 %lu 个已下载的 pak 文件",
-              (unsigned long)removed);
-    }
 
     UIAlertController *al = [UIAlertController
         alertControllerWithTitle:@"授权已到期"
