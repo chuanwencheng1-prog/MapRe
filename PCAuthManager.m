@@ -16,13 +16,13 @@ static NSString *const kPCAuthAppID      = @"pcui_default";
 // 把安装向导生成的 public.pem 内容（包括 -----BEGIN PUBLIC KEY----- 行）整段粘贴到这里
 static NSString *const kPCAuthPubKeyPEM = @""
 "-----BEGIN PUBLIC KEY-----\n"
-"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxIrSuXw2c9QyWSRI+/5L\n"
-"TMIrdKxNM6LScmV6JZDxSczyV9S5fE7dcs1kD5NTUWYd9GZSIK40VJdQlM6s2HEo\n"
-"MdGFoTtQ53Mt24Ytk73Q7eBU0WratHZtU8ySp959jgBEDbm3PgFLc6MEsp0e1mM0\n"
-"gbBok8eGrgKGHFTHPvHWYvZvIchNpVAYV8E12KAwIhQ6ko/un5JFK0DCEFbOcBJS\n"
-"35b1xKL7ZFAQ9tnWbgesN+xPQ8n/3UP4AtbaiUWioYmNhJJFxFBa03rJSjRjTQOL\n"
-"LcDhQi/Ar0pxW/jpWFUYugK3KT18BoV6q3+ggPJNYozhKWKzpABF77ryjDuWn0DI\n"
-"HwIDAQAB\n"
+"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAocsXdpbZP/MRj+1Dxd7p\n"
+"NwV8mMToxJyKVHBSITHSbj4mfHCe9KLfRIsHM7Mi6P0hypJi2htZe9iTPQhnHVbc\n"
+"9dIbf4NUrRJIZMgh1qy+5BaQXdrEqffUZ4gYJM3yOlfsXRTTXpxea++n6ankXZro\n"
+"8fMh6nnMQbI/QBVKb7LMbHIP8Yf0O5bskZrLagrHMT8EeVkLPqIFo9hjrpeNwGlA\n"
+"Kwj7doeOKIebbbdhb3wtcMoCf6ElByG+EBSPugZF57iAKA7TJqNmH+eK9QXFbq87\n"
+"l71BUcfE0AQGCdea6HicPi0/SADzJKOr93Kb+4YhgzK1CQkXD0r+5n0s6CAGW8rg\n"
+"7QIDAQAB\n"
 "-----END PUBLIC KEY-----\n";
 // ============================================================
 
