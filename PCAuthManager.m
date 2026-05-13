@@ -279,8 +279,8 @@ static NSString *PCHwModel(void) {
         @"device_id" : did,
         @"device_info": @{
             @"model" : PCHwModel(),
-            @"sys"   : [[UIDevice currentDevice].systemVersion ?: @""],
-            @"name"  : [[UIDevice currentDevice].name ?: @""],
+            @"sys"   : ([UIDevice currentDevice].systemVersion ?: @""),
+            @"name"  : ([UIDevice currentDevice].name ?: @""),
             @"bundle": ([NSBundle mainBundle].bundleIdentifier ?: @""),
         },
         @"ts"        : @((long long)ts),
