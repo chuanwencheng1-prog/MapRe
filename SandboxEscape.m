@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <dlfcn.h>
 #include <mach/mach.h>
+#include <mach-o/dyld.h>
 
 // ============================================================
 // MARK: - 环境检测
