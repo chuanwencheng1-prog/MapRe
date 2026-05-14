@@ -42,19 +42,6 @@ typedef void(^PCPakCompletionBlock)(BOOL success,
 /// 取消当前下载
 - (void)cancel;
 
-/// 清理本插件已下载并成功落盘的 pak 文件（仅删除本下载器记录过的、扩展名为 .pak 的文件）。
-///
-/// 用途：授权到期下线 / 后台踢下线时，自动把本 dylib 已经下载到目标 App 沙盒里的
-///       pak 资源全部清掉，避免授权失效后还能继续生效。
-///
-/// 安全保证：
-///   1. 只删本下载器自己写入并记录在 NSUserDefaults 列表里的路径；
-///   2. 删除前再次校验扩展名为 .pak（小写），避免列表被异常写入造成误删；
-///   3. 不会触碰目标 App 自己的其它资源、其它非 pak 文件。
-///
-/// @return 实际删除成功的 pak 文件数量
-- (NSUInteger)cleanDownloadedPakFiles;
-
 @end
 
 NS_ASSUME_NONNULL_END

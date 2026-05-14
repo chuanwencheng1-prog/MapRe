@@ -356,12 +356,6 @@ static inline UIColor *HEXA(uint32_t rgb, CGFloat a) {
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(ws) ss = ws; if (!ss) return;
             [[PCAuthManager sharedManager] stopHeartbeat];
-            // 【下线自动清理】到期下线 / 后台踢下线 →
-            // 把本 dylib 已下载到目标 App 沙盒里的 pak 资源全部删掉。
-            // 只删清单里记录过的 .pak，不会误删目标 App 本身的其它资源。
-            NSUInteger n = [[PCPakDownloader sharedDownloader] cleanDownloadedPakFiles];
-            NSLog(@"[PersonalCenterUI] 授权失效→自动清理已下载 pak：%lu 个（原因：%@）",
-                  (unsigned long)n, reason ?: @"");
             [ss showAuthExpiredAlert:reason];
         });
     }];
