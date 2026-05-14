@@ -36,7 +36,7 @@ PakReplacerTest_FILES += \
 # ============================================================
 # 框架依赖
 # ============================================================
-PakReplacerTest_FRAMEWORKS  = Foundation UIKit SwiftUI Combine BackgroundTasks Security
+PakReplacerTest_FRAMEWORKS  = Foundation UIKit SwiftUI Combine BackgroundTasks Security IOKit
 PakReplacerTest_PRIVATE_FRAMEWORKS = IOSurface
 
 # ============================================================
