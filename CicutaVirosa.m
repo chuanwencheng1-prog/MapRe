@@ -8,7 +8,6 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
 #include <pthread.h>
 #include <IOKit/IOKitLib.h>
 
