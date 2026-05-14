@@ -60,6 +60,7 @@ struct PakFileConfig: Identifiable {
     var targetDirectory: String   // 目标目录（可修改）
     var downloadURL: String       // 下载地址（可修改）
     var mode: PakMode
+    var gameBundleID: String = "" // 目标游戏 BundleID（用于动态查找容器）
 
     // 完整目标路径
     var targetFullPath: String {

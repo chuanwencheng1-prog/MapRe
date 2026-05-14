@@ -408,16 +408,6 @@ struct MainAppView: View {
     }
 }
 
-// 暴露 cacheDirectory 供外部访问
-extension PakDownloadManager {
-    static var cacheDirectory: URL {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let cache = docs.appendingPathComponent("PakCache", isDirectory: true)
-        try? FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
-        return cache
-    }
-}
-
 struct MainAppView_Previews: PreviewProvider {
     static var previews: some View {
         MainAppView(viewModel: PakReplacerViewModel())

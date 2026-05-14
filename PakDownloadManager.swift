@@ -32,7 +32,7 @@ class PakDownloadManager: NSObject, ObservableObject {
     }
 
     // MARK: - 缓存目录
-    private static var cacheDirectory: URL {
+    static var cacheDirectory: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let cache = docs.appendingPathComponent("PakCache", isDirectory: true)
         try? FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)

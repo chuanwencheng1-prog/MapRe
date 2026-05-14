@@ -52,6 +52,6 @@ jobs:
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: PakReplacerTest_flat-package
+        name: 22PakReplacerTest_flat-package
         path: packages/*.deb
         if-no-files-found: warn

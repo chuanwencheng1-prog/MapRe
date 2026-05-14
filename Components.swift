@@ -297,13 +297,14 @@ struct PathEditorView: View {
             .navigationTitle("编辑路径配置")
             .navigationBarItems(
                 leading: Button("取消") { isPresented = false },
-                trailing: Button("保存") {
+                trailing: Button(action: {
                     config.pakFileName = editFileName
                     config.targetDirectory = editDirectory
                     config.downloadURL = editURL
                     isPresented = false
+                }) {
+                    Text("保存").fontWeight(.semibold)
                 }
-                .fontWeight(.semibold)
             )
         }
         .onAppear {
