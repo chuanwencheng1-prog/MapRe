@@ -34,7 +34,7 @@ extern kern_return_t IOSurfaceGetPropertyMaximum(io_object_t, CFStringRef);
 
 static BOOL          g_cv_active    = NO;
 static mach_port_t   g_cv_tfp0      = MACH_PORT_NULL;
-static uint64_t      g_cv_kbase     = 0;
+static uint64_t      g_cv_kbase     __attribute__((unused)) = 0;
 
 // ============================================================
 // MARK: - 内部: IOSurface 喷射 + UAF 竞态
