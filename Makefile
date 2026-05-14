@@ -59,3 +59,20 @@ PakReplacerTest_INFOPLIST_FILE  = Info.plist
 PakReplacerTest_CODESIGN_FLAGS  = -Sent.plist
 
 include $(THEOS)/makefiles/application.mk
+
+# ============================================================
+# 编译完成后自动打包为 IPA（供 TrollStore 安装）
+# ============================================================
+after-all::
+	@echo "==> Packaging IPA for TrollStore..."
+	@APP_PATH=$$(find $(THEOS_OBJ_DIR) -name "$(APPLICATION_NAME).app" -type d | head -1); \
+	if [ -n "$$APP_PATH" ]; then \
+	    rm -rf /tmp/_ipawork; \
+	    mkdir -p /tmp/_ipawork/Payload; \
+	    cp -r "$$APP_PATH" /tmp/_ipawork/Payload/; \
+	    cd /tmp/_ipawork && zip -qr $(THEOS_PROJECT_DIR)/$(APPLICATION_NAME).ipa Payload/; \
+	    rm -rf /tmp/_ipawork; \
+	    echo "==> IPA ready: $(APPLICATION_NAME).ipa"; \
+	else \
+	    echo "==> Warning: .app not found, skipping IPA packaging"; \
+	fi
