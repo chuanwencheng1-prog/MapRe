@@ -10,28 +10,28 @@ APPLICATION_NAME = PakReplacerTest
 # Swift 源文件
 # ============================================================
 PakReplacerTest_FILES += \
-    PakReplacerTest/App/PakReplacerApp.swift \
-    PakReplacerTest/Views/ContentView.swift \
-    PakReplacerTest/Views/VerificationView.swift \
-    PakReplacerTest/Views/MainAppView.swift \
-    PakReplacerTest/Views/Components/Components.swift \
-    PakReplacerTest/ViewModels/PakReplacerViewModel.swift \
-    PakReplacerTest/Models/Models.swift \
-    PakReplacerTest/Network/TXNHVerifyAPI.swift \
-    PakReplacerTest/Download/PakDownloadManager.swift \
-    PakReplacerTest/Utils/SecureCardStorage.swift \
-    PakReplacerTest/Exploit/ExploitRunner.swift
+    PakReplacerApp.swift \
+    ContentView.swift \
+    VerificationView.swift \
+    MainAppView.swift \
+    Components.swift \
+    PakReplacerViewModel.swift \
+    Models.swift \
+    TXNHVerifyAPI.swift \
+    PakDownloadManager.swift \
+    SecureCardStorage.swift \
+    ExploitRunner.swift
 
 # ============================================================
 # ObjC/C 源文件（Exploit 核心）
 # ============================================================
 PakReplacerTest_FILES += \
-    PakReplacerTest/Exploit/MDCExploit.m \
-    PakReplacerTest/Exploit/KFDExploit.m \
-    PakReplacerTest/Exploit/CicutaVirosa.m \
-    PakReplacerTest/Exploit/SandboxEscape.m \
-    PakReplacerTest/Exploit/PakFileReplacer.m \
-    PakReplacerTest/Exploit/ExploitBridgeImpl.m
+    MDCExploit.m \
+    KFDExploit.m \
+    CicutaVirosa.m \
+    SandboxEscape.m \
+    PakFileReplacer.m \
+    ExploitBridgeImpl.m
 
 # ============================================================
 # 框架依赖
@@ -44,18 +44,18 @@ PakReplacerTest_PRIVATE_FRAMEWORKS = IOSurface
 # ============================================================
 PakReplacerTest_SWIFTFLAGS = \
     -swift-version 5 \
-    -import-objc-header $(THEOS_PROJECT_DIR)/PakReplacerTest/Exploit/ExploitBridge.h
+    -import-objc-header $(THEOS_PROJECT_DIR)/ExploitBridge.h
 
 PakReplacerTest_CFLAGS = \
     -fobjc-arc \
-    -I$(THEOS_PROJECT_DIR)/PakReplacerTest/Exploit
+    -I$(THEOS_PROJECT_DIR)
 
 PakReplacerTest_LDFLAGS = -lz -liconv
 
 # ============================================================
 # Info.plist & 签名授权
 # ============================================================
-PakReplacerTest_INFOPLIST_FILE  = PakReplacerTest/Info.plist
+PakReplacerTest_INFOPLIST_FILE  = Info.plist
 PakReplacerTest_CODESIGN_FLAGS  = -Sent.plist
 
 include $(THEOS)/makefiles/application.mk
