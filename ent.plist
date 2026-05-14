@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 基础签名 -->
+    <key>application-identifier</key>
+    <string>TEAMID.com.pakreplacertest.app</string>
+
+    <!-- 文件系统访问（对应原始 PAK 路径访问）-->
+    <key>com.apple.private.security.no-sandbox</key>
+    <true/>
+
+    <!-- 内核访问（对应原始 KFD/MDC 漏洞利用）-->
+    <key>com.apple.private.skip-library-validation</key>
+    <true/>
+
+    <!-- 任意代码执行 -->
+    <key>get-task-allow</key>
+    <false/>
+
+    <!-- 网络访问 -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Keychain 访问（对应原始 SecItemAdd/SecItemCopyMatching）-->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>TEAMID.com.pakreplacertest.app</string>
+    </array>
+
+    <!-- 后台任务（对应原始 BGTaskSchedulerPermittedIdentifiers）-->
+    <key>com.apple.developer.background-task-scheduler-permitted-identifiers</key>
+    <array>
+        <string>com.pakreplacertest.autorestore</string>
+        <string>com.pakreplacertest.autorestore.processing</string>
+    </array>
+
+    <!-- 文件访问权限 -->
+    <key>com.apple.private.vnode.override-vfs-tunnel</key>
+    <true/>
+
+    <!-- 任务端口（KFD tfp0 支持）-->
+    <key>com.apple.private.task_for_pid-allow</key>
+    <true/>
+
+    <!-- TrollStore 签名兼容 -->
+    <key>com.apple.private.security.storage.AppDataContainers</key>
+    <true/>
+</dict>
+</plist>

@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 基本 Bundle 信息 -->
+	<key>CFBundleName</key>
+	<string>PakReplacerTest</string>
+
+	<key>CFBundleDisplayName</key>
+	<string>A全系统内透</string>
+
+	<!-- ✅ TODO: 修改为你自己的 Bundle ID -->
+	<key>CFBundleIdentifier</key>
+	<string>com.yourcompany.pakreplacertest</string>
+
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+
+	<key>CFBundleVersion</key>
+	<string>1</string>
+
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh-Hans</string>
+
+	<!-- 支持平台 -->
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>iPhoneOS</string>
+	</array>
+
+	<!-- 设备支持（对应原始 UIDeviceFamily: iPhone + iPad）-->
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+		<integer>2</integer>
+	</array>
+
+	<!-- 最低 iOS 版本（对应原始 MinimumOSVersion: 10.0）-->
+	<key>MinimumOSVersion</key>
+	<string>14.0</string>
+
+	<!-- 界面方向（对应原始：仅竖屏）-->
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+
+	<!-- 状态栏（对应原始 UIStatusBarStyleLightContent）-->
+	<key>UIStatusBarStyle</key>
+	<string>UIStatusBarStyleLightContent</string>
+
+	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<false/>
+
+	<!-- 强制全屏（对应原始 UIRequiresFullScreen）-->
+	<key>UIRequiresFullScreen</key>
+	<true/>
+
+	<!-- 文件共享（对应原始 UIFileSharingEnabled）-->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+
+	<!-- 文档浏览器支持（对应原始 UISupportsDocumentBrowser）-->
+	<key>UISupportsDocumentBrowser</key>
+	<true/>
+
+	<!-- 原地打开文档（对应原始 LSSupportsOpeningDocumentsInPlace）-->
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+
+	<!-- iOS 启动 -->
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+
+	<!-- 应用查询 Scheme（对应原始 filza 检测）-->
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>filza</string>
+	</array>
+
+	<!-- 网络传输安全（对应原始 NSAllowsArbitraryLoads）-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+
+	<!-- 后台任务（对应原始 BGTaskSchedulerPermittedIdentifiers）-->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<!-- ✅ TODO: 修改为你自己的 Bundle ID 前缀 -->
+		<string>com.yourcompany.pakreplacertest.autorestore</string>
+		<string>com.yourcompany.pakreplacertest.autorestore.processing</string>
+	</array>
+
+	<!-- 后台模式（对应原始 UIBackgroundModes）-->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+
+	<!-- 应用图标 -->
+	<key>CFBundleIcons</key>
+	<dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>AppIcon</string>
+			</array>
+			<key>CFBundleIconName</key>
+			<string>AppIcon</string>
+		</dict>
+	</dict>
+
+	<!-- iPad 图标 -->
+	<key>CFBundleIcons~ipad</key>
+	<dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>AppIcon</string>
+			</array>
+			<key>CFBundleIconName</key>
+			<string>AppIcon</string>
+		</dict>
+	</dict>
+
+	<!-- 启动屏幕 -->
+	<key>UILaunchScreen</key>
+	<dict/>
+
+	<!-- 强调色 -->
+	<key>NSAccentColorName</key>
+	<string>AccentColor</string>
+
+	<!-- 支持间接输入（对应原始配置）-->
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+
+	<!--
+	    ✅ 可选：如果你需要访问位置/相机等权限，在此添加对应描述
+	    例如：
+	    <key>NSLocationWhenInUseUsageDescription</key>
+	    <string>用于检测设备地理位置</string>
+	-->
+
+</dict>
+</plist>

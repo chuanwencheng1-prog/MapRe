@@ -1,0 +1,151 @@
+================================================================
+PakReplacerTest 项目使用说明
+仿照原始 PakReplacer (A全系统内透) 的架构复刻
+用于测试自己的 IPA 文件漏洞
+================================================================
+
+一、项目结构
+----------------------------------------------------------------
+PakReplacerTest/
+├── PakReplacerTest.xcodeproj/  ← 用 Xcode 新建时自动生成
+└── PakReplacerTest/
+    ├── App/
+    │   └── PakReplacerApp.swift      ← App 入口 + BGTask 注册
+    ├── Views/
+    │   ├── ContentView.swift          ← 顶层路由（验证/主界面切换）
+    │   ├── VerificationView.swift     ← 卡密验证界面
+    │   ├── MainAppView.swift          ← 主功能界面
+    │   └── Components/
+    │       └── Components.swift       ← WhiteCard/StatusRow/FeatureItem 等
+    ├── ViewModels/
+    │   └── PakReplacerViewModel.swift ← 主业务逻辑 ViewModel
+    ├── Models/
+    │   └── Models.swift               ← 数据模型（PakMode/PakFileConfig等）
+    ├── Network/
+    │   └── TXNHVerifyAPI.swift        ← 卡密验证 API（对应原始 TXNHVerifyAPI）
+    ├── Download/
+    │   └── PakDownloadManager.swift   ← PAK 下载管理器
+    ├── Utils/
+    │   └── SecureCardStorage.swift    ← Keychain 存储
+    ├── Exploit/
+    │   ├── ExploitBridge.h            ← ObjC/C Exploit 桥接头文件
+    │   └── ExploitRunner.swift        ← Exploit 统一调用接口
+    └── Info.plist                     ← 应用配置文件
+
+
+二、在 Xcode 中创建项目步骤
+----------------------------------------------------------------
+1. 打开 Xcode → File → New → Project
+2. 选择 iOS → App → Next
+3. 填写信息:
+   - Product Name: PakReplacerTest
+   - Team: 你的开发者账号
+   - Bundle Identifier: com.yourcompany.pakreplacertest
+   - Interface: SwiftUI
+   - Language: Swift
+4. 保存到 Desktop/4/PakReplacerTest/ 目录
+5. 将本项目中所有 .swift 文件拖入 Xcode 对应分组
+6. 替换 Xcode 生成的 Info.plist（或合并配置）
+7. 在 Xcode 中添加 Capabilities（见下方说明）
+
+
+三、必须修改的配置（搜索 "✅ TODO" 定位所有修改点）
+----------------------------------------------------------------
+
+【1】Models.swift - PAK 文件路径配置
+    找到 PakFileConfig.defaultConfigs，修改每个条目的:
+    - targetDirectory: 你自己 IPA 应用的 PAK 目录路径
+      例: "/var/mobile/Containers/Data/Application/你的UUID/Documents/YourGame/Saved/Paks"
+    - downloadURL: 你的 PAK 文件下载地址
+    - pakFileName: 你的 PAK 文件名
+
+    如何找到你的 IPA 应用 UUID？
+    方法1: 在设备 Filza 中浏览 /var/mobile/Containers/Data/Application/
+    方法2: 在应用代码中: Bundle.main.bundleURL.path 找 Bundle 路径
+    方法3: 使用 iMazing / Frida 工具查看
+
+【2】TXNHVerifyAPI.swift - 验证服务器地址
+    如果不需要验证，可以跳过。
+    如需使用，修改 VerifyAPIConfig:
+    static var baseURL = "https://你的服务器.com"
+    static var appKey  = "你的 AppKey"
+
+【3】Info.plist - Bundle ID
+    <key>CFBundleIdentifier</key>
+    <string>com.yourcompany.pakreplacertest</string>
+    改为你自己的 Bundle ID
+
+【4】ExploitRunner.swift - 集成你自己的 Exploit
+    在 run() 方法中取消注释并集成你自己的漏洞利用代码
+    参考 ExploitBridge.h 中的函数声明
+
+
+四、Xcode Capabilities 配置（对应原始 Entitlements）
+----------------------------------------------------------------
+在 Xcode → Target → Signing & Capabilities 中添加:
+
+必须:
+  ✅ Background Modes → 勾选 "Background fetch" 和 "Background processing"
+
+可选（根据需求）:
+  ☐ Keychain Sharing        (如需跨 App 共享 Keychain)
+  ☐ App Groups              (如需进程间通信)
+  ☐ Network Extensions      (如需 VPN/DNS 功能)
+
+
+五、绕过验证（跳过卡密输入，直接进入主界面）
+----------------------------------------------------------------
+修改 SecureCardStorage.swift 中的 isActivated 属性:
+
+    var isActivated: Bool {
+        return true  // 直接返回 true，跳过验证
+    }
+
+或者在 VerificationView.swift 中临时硬编码:
+    // 在 performVerify() 中直接设置 isVerified = true
+    viewModel.isVerified = true
+
+
+六、测试流程
+----------------------------------------------------------------
+1. 修改 Models.swift 中的 targetDirectory 为你的测试路径
+2. 准备一个 PAK 测试文件，放到 Mac 上
+3. 设置 downloadURL 指向该文件（可用本地 HTTP 服务器）
+4. 在 ExploitRunner.swift 中实现 overwriteFile 逻辑
+5. 安装到测试设备（需要 TrollStore 或开发者证书）
+6. 运行 App → 输入任意字符作为卡密（或绕过验证）
+7. 选择模式 → 点击"替换 PAK"按钮
+8. 查看日志面板确认结果
+
+
+七、与原始 PakReplacer 的对应关系
+----------------------------------------------------------------
+原始模块                 → 本项目对应文件
+--------------------------------------------------------------------
+PakReplacerApp.swift     → App/PakReplacerApp.swift
+ContentView.swift        → Views/ContentView.swift
+MainAppView              → Views/MainAppView.swift
+VerificationView.swift   → Views/VerificationView.swift
+PakReplacerViewModel.swift → ViewModels/PakReplacerViewModel.swift
+PakDownloadManager.swift → Download/PakDownloadManager.swift
+TXNHVerifyAPI.mm         → Network/TXNHVerifyAPI.swift
+SecureCardStorage        → Utils/SecureCardStorage.swift
+WhiteCardV               → Views/Components/Components.swift
+StatusRowV               → Views/Components/Components.swift
+FeatureItemV             → Views/Components/Components.swift
+CardDividerV             → Views/Components/Components.swift
+VerifyFeatureBadgeV      → Views/Components/Components.swift
+kexploit_opa334.m        → Exploit/ExploitRunner.swift (占位)
+cicuta_virosa.o          → Exploit/ExploitRunner.swift (占位)
+mdc_exploit.m            → Exploit/ExploitRunner.swift (占位)
+DarkSwordExploit.o       → Exploit/ExploitRunner.swift (占位)
+
+
+八、注意事项
+----------------------------------------------------------------
+• 本工具仅用于测试自己 IPA 程序的安全性
+• 测试时建议使用专用测试设备，不要在主力机上操作
+• 替换系统路径下的文件需要 TrollStore 或越狱环境
+• 沙盒内路径（Documents/Library等）可直接用 FileManager 操作
+
+================================================================
