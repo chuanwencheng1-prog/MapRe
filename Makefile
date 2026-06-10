@@ -10,5 +10,6 @@ APPLICATION_NAME = KernelPanel
 KernelPanel_FILES = main.m KPAppDelegate.m KPRootViewController.m
 KernelPanel_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore
 KernelPanel_CFLAGS = -fobjc-arc
+KernelPanel_RESOURCE_DIR = Resources
 
 include $(THEOS_MAKE_PATH)/application.mk
