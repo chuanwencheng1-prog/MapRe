@@ -1,6 +1,6 @@
 INSTALL_TARGET_PROCESSES = KernelPanel
 ARCHS = arm64
-TARGET = iphone:clang:16.4:14.0
+TARGET = iphone:clang:latest:14.0
 
 include $(THEOS)/makefiles/common.mk
 
