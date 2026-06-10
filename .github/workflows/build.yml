@@ -1,0 +1,50 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Select Xcode
+      run: sudo xcode-select -s /Applications/Xcode_15.2.app/Contents/Developer
+
+    - name: Show Xcode version
+      run: xcodebuild -version
+
+    - name: Build Archive
+      run: |
+        xcodebuild archive \
+          -project KernelPanel.xcodeproj \
+          -scheme KernelPanel \
+          -configuration Release \
+          -archivePath build/KernelPanel.xcarchive \
+          -destination "generic/platform=iOS" \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO \
+          DEVELOPMENT_TEAM="" \
+          -allowProvisioningUpdates
+
+    - name: Create IPA
+      run: |
+        mkdir -p build/Payload
+        cp -r build/KernelPanel.xcarchive/Products/Applications/KernelPanel.app build/Payload/
+        cd build
+        zip -r KernelPanel.ipa Payload
+        rm -rf Payload
+
+    - name: Upload IPA
+      uses: actions/upload-artifact@v4
+      with:
+        name: KernelPanel-IPA
+        path: build/KernelPanel.ipa

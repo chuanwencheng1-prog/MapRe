@@ -1,0 +1,21 @@
+# Xcode
+build/
+*.xcworkspace
+xcuserdata/
+DerivedData/
+*.xcuserstate
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# CocoaPods
+Pods/
+
+# Swift Package Manager
+.build/
+Package.resolved
