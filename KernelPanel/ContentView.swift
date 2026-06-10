@@ -67,6 +67,7 @@ struct HeaderCardView: View {
             }
         }
         .padding(20)
+        .frame(minHeight: 90)
         .background(Color.white)
         .cornerRadius(18)
         .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 4)
@@ -146,14 +147,12 @@ struct MainContentView: View {
                 Text("启动")
                     .font(.system(size: 14, weight: .medium))
                     .frame(width: 120, height: 44)
-                    .background(viewModel.startBtnEnabled ?
-                        Color(red: 0.941, green: 0.969, blue: 0.941) :
-                        Color(red: 0.941, green: 0.969, blue: 0.941))
+                    .background(Color(red: 0.941, green: 0.969, blue: 0.941))
                     .foregroundColor(Color(red: 0.204, green: 0.780, blue: 0.349))
                     .cornerRadius(12)
             }
+            .buttonStyle(.plain)
             .disabled(!viewModel.startBtnEnabled)
-            .opacity(viewModel.startBtnEnabled ? 1.0 : 0.5)
         }
         .padding(20)
         .background(Color.white)
@@ -179,6 +178,7 @@ struct KernelButton: View {
                 .foregroundColor(buttonForeground)
                 .cornerRadius(14)
         }
+        .buttonStyle(.plain)
         .disabled(!isEnabled || isFinished)
     }
     
@@ -214,8 +214,8 @@ struct ContentButton: View {
                 .foregroundColor(Color(red: 0.204, green: 0.780, blue: 0.349))
                 .cornerRadius(12)
         }
+        .buttonStyle(.plain)
         .disabled(!isEnabled)
-        .opacity(isEnabled ? 1.0 : 0.5)
     }
 }
 
@@ -248,7 +248,7 @@ struct LogContainerView: View {
                 alignment: .bottom
             )
             
-            // 日志内容
+            // 日志内容 - overflow:hidden 禁止手动滑动，仅代码自动滚动
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
@@ -264,6 +264,7 @@ struct LogContainerView: View {
                     .padding(.vertical, 16)
                 }
                 .frame(height: 200)
+                .allowsHitTesting(false) // 禁止用户触摸滚动（对应HTML的overflow:hidden）
                 .onChange(of: viewModel.logs.count) { _ in
                     if let lastLog = viewModel.logs.last {
                         withAnimation {
@@ -272,6 +273,7 @@ struct LogContainerView: View {
                     }
                 }
             }
+            .clipped() // 裁剪溢出内容（对应overflow:hidden）
         }
         .background(Color(red: 0.973, green: 0.976, blue: 0.984))
         .cornerRadius(18)
