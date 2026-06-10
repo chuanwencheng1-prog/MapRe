@@ -4,7 +4,7 @@ include $(THEOS)/makefiles/common.mk
 
 APPLICATION_NAME = KernelPanel
 
-KernelPanel_FILES = KernelPanel/main.m KernelPanel/KPAppDelegate.m KernelPanel/KPRootViewController.m
+KernelPanel_FILES = main.m KPAppDelegate.m KPRootViewController.m
 KernelPanel_FRAMEWORKS = UIKit Foundation
 KernelPanel_CFLAGS = -fobjc-arc
 
