@@ -12,7 +12,6 @@ jobs:
     steps:
     - uses: actions/checkout@v5
       with:
-        # 强制刷新，不使用缓存
         fetch-depth: 0
         
     - name: Install Theos Dependencies
@@ -36,7 +35,7 @@ jobs:
         make clean || true
         rm -rf .theos/ || true
         
-    - name: Build Tweak
+    - name: Build Package
       run: |
         export THEOS=~/theos
         echo "===== 开始编译 ====="
@@ -47,11 +46,11 @@ jobs:
         }
         echo "===== 编译完成，检查产物 ====="
         ls -la packages/ 2>/dev/null || echo "packages 目录不存在"
-        find packages/ -name "*.deb" 2>/dev/null || echo "未找到 .deb 文件"
+        find packages/ -name "*.ipa" 2>/dev/null || echo "未找到 .ipa 文件"
         
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: yyyf-package
-        path: packages/*.deb
+        name: KernelPanel-ipa
+        path: packages/*.ipa
         if-no-files-found: warn
