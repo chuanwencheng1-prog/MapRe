@@ -55,21 +55,12 @@
     contentWrapper.translatesAutoresizingMaskIntoConstraints = NO;
     [scrollView addSubview:contentWrapper];
     
-    if (@available(iOS 11.0, *)) {
-        [NSLayoutConstraint activateConstraints:@[
-            [scrollView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
-            [scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-            [scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-            [scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        ]];
-    } else {
-        [NSLayoutConstraint activateConstraints:@[
-            [scrollView.topAnchor constraintEqualToAnchor:self.topLayoutGuide.bottomAnchor],
-            [scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-            [scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-            [scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        ]];
-    }
+    [NSLayoutConstraint activateConstraints:@[
+        [scrollView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    ]];
     
     [NSLayoutConstraint activateConstraints:@[
         [contentWrapper.topAnchor constraintEqualToAnchor:scrollView.topAnchor],
