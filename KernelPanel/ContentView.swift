@@ -142,7 +142,9 @@ struct MainContentView: View {
             
             // 启动按钮
             Button(action: {
-                viewModel.addLog("点击启动按钮")
+                if viewModel.startBtnEnabled {
+                    viewModel.addLog("点击启动按钮")
+                }
             }) {
                 Text("启动")
                     .font(.system(size: 14, weight: .medium))
@@ -152,7 +154,6 @@ struct MainContentView: View {
                     .cornerRadius(12)
             }
             .buttonStyle(.plain)
-            .disabled(!viewModel.startBtnEnabled)
         }
         .padding(20)
         .background(Color.white)
@@ -169,7 +170,11 @@ struct KernelButton: View {
     let action: () -> Void
     
     var body: some View {
-        Button(action: action) {
+        Button(action: {
+            if isEnabled && !isFinished {
+                action()
+            }
+        }) {
             Text(title)
                 .font(.system(size: 15, weight: .medium))
                 .frame(maxWidth: .infinity)
@@ -179,7 +184,6 @@ struct KernelButton: View {
                 .cornerRadius(14)
         }
         .buttonStyle(.plain)
-        .disabled(!isEnabled || isFinished)
     }
     
     private var buttonBackground: Color {
@@ -204,7 +208,11 @@ struct ContentButton: View {
     let action: () -> Void
     
     var body: some View {
-        Button(action: action) {
+        Button(action: {
+            if isEnabled {
+                action()
+            }
+        }) {
             Text(title)
                 .font(.system(size: 13, weight: .medium))
                 .lineLimit(1)
@@ -215,7 +223,6 @@ struct ContentButton: View {
                 .cornerRadius(12)
         }
         .buttonStyle(.plain)
-        .disabled(!isEnabled)
     }
 }
 
