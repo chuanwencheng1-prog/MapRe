@@ -36,5 +36,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: MapReplacer-package
-        path: packages/*.deb
+        path: packages/*.ipa
         if-no-files-found: error
