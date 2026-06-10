@@ -1,9 +1,8 @@
-Package: com.pakreplacertest.app
-Name: PakReplacerTest
-Depends: firmware (>= 14.0)
+Package: com.kernelpanel.app
+Name: KernelPanel
 Version: 1.0.0
-Architecture: iphoneos-arm64
-Description: PAK Replacer Test Tool - iOS IPA Vulnerability Tester
+Architecture: iphoneos-arm
+Description: iOS Kernel Management Panel
 Maintainer: Developer
 Author: Developer
 Section: Applications
