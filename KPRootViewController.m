@@ -11,7 +11,7 @@
 // Main Content
 @property (nonatomic, strong) UIView *mainContent;
 @property (nonatomic, strong) UIButton *readBtn;
-@property (nonatomic, strong) UIButton *initBtn;
+@property (nonatomic, strong) UIButton *resetBtn;
 @property (nonatomic, strong) UIButton *downBtn1;
 @property (nonatomic, strong) UIButton *downBtn2;
 @property (nonatomic, strong) UIButton *downBtn3;
@@ -194,9 +194,9 @@
     [self.mainContent addSubview:btnGroup];
     
     self.readBtn = [self createIOSButton:@"启动内核读写"];
-    self.initBtn = [self createIOSButton:@"初始化内核"];
+    self.resetBtn = [self createIOSButton:@"初始化内核"];
     [btnGroup addSubview:self.readBtn];
-    [btnGroup addSubview:self.initBtn];
+    [btnGroup addSubview:self.resetBtn];
     
     [NSLayoutConstraint activateConstraints:@[
         [btnGroup.topAnchor constraintEqualToAnchor:self.mainContent.topAnchor constant:20],
@@ -208,15 +208,15 @@
         [self.readBtn.bottomAnchor constraintEqualToAnchor:btnGroup.bottomAnchor],
         [self.readBtn.leadingAnchor constraintEqualToAnchor:btnGroup.leadingAnchor],
         
-        [self.initBtn.topAnchor constraintEqualToAnchor:btnGroup.topAnchor],
-        [self.initBtn.bottomAnchor constraintEqualToAnchor:btnGroup.bottomAnchor],
-        [self.initBtn.leadingAnchor constraintEqualToAnchor:self.readBtn.trailingAnchor constant:12],
-        [self.initBtn.trailingAnchor constraintEqualToAnchor:btnGroup.trailingAnchor],
-        [self.initBtn.widthAnchor constraintEqualToAnchor:self.readBtn.widthAnchor],
+        [self.resetBtn.topAnchor constraintEqualToAnchor:btnGroup.topAnchor],
+        [self.resetBtn.bottomAnchor constraintEqualToAnchor:btnGroup.bottomAnchor],
+        [self.resetBtn.leadingAnchor constraintEqualToAnchor:self.readBtn.trailingAnchor constant:12],
+        [self.resetBtn.trailingAnchor constraintEqualToAnchor:btnGroup.trailingAnchor],
+        [self.resetBtn.widthAnchor constraintEqualToAnchor:self.readBtn.widthAnchor],
     ]];
     
     [self.readBtn addTarget:self action:@selector(readBtnTapped) forControlEvents:UIControlEventTouchUpInside];
-    [self.initBtn addTarget:self action:@selector(initBtnTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.resetBtn addTarget:self action:@selector(resetBtnTapped) forControlEvents:UIControlEventTouchUpInside];
     
     // Content button group - row 1
     UIView *contentRow1 = [[UIView alloc] init];
@@ -444,11 +444,11 @@
     } completion:nil];
     
     // Init button - pulseBtn
-    self.initBtn.alpha = 0;
-    self.initBtn.transform = CGAffineTransformMakeScale(0.2, 0.2);
+    self.resetBtn.alpha = 0;
+    self.resetBtn.transform = CGAffineTransformMakeScale(0.2, 0.2);
     [UIView animateWithDuration:0.7 delay:0.9 usingSpringWithDamping:0.7 initialSpringVelocity:0 options:0 animations:^{
-        self.initBtn.alpha = 1;
-        self.initBtn.transform = CGAffineTransformIdentity;
+        self.resetBtn.alpha = 1;
+        self.resetBtn.transform = CGAffineTransformIdentity;
     } completion:nil];
     
     // Log container - staggerIn
@@ -496,7 +496,7 @@
         
         // Enable kernel buttons
         self.readBtn.enabled = YES;
-        self.initBtn.enabled = YES;
+        self.resetBtn.enabled = YES;
     } else {
         // Hide expire tips
         [UIView animateWithDuration:0.2 animations:^{
@@ -509,7 +509,7 @@
         
         // Disable all
         self.readBtn.enabled = NO;
-        self.initBtn.enabled = NO;
+        self.resetBtn.enabled = NO;
         self.downBtn1.enabled = NO;
         self.downBtn2.enabled = NO;
         self.downBtn3.enabled = NO;
@@ -542,7 +542,7 @@
     });
 }
 
-- (void)initBtnTapped {
+- (void)resetBtnTapped {
     [self addLog:@"即将执行内核重置操作"];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self addLog:@"清空临时缓存数据"];
@@ -553,10 +553,10 @@
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self addLog:@"内核初始化全部完成"];
         // Mark as finish - grey style
-        self.initBtn.enabled = NO;
-        self.initBtn.backgroundColor = [UIColor colorWithRed:0.914 green:0.914 blue:0.922 alpha:1.0];
-        [self.initBtn setTitleColor:[UIColor colorWithRed:0.557 green:0.557 blue:0.576 alpha:1.0] forState:UIControlStateNormal];
-        [self.initBtn setTitleColor:[UIColor colorWithRed:0.557 green:0.557 blue:0.576 alpha:1.0] forState:UIControlStateDisabled];
+        self.resetBtn.enabled = NO;
+        self.resetBtn.backgroundColor = [UIColor colorWithRed:0.914 green:0.914 blue:0.922 alpha:1.0];
+        [self.resetBtn setTitleColor:[UIColor colorWithRed:0.557 green:0.557 blue:0.576 alpha:1.0] forState:UIControlStateNormal];
+        [self.resetBtn setTitleColor:[UIColor colorWithRed:0.557 green:0.557 blue:0.576 alpha:1.0] forState:UIControlStateDisabled];
         self.initDone = YES;
         [self checkUnlock];
     });
