@@ -27,12 +27,17 @@ jobs:
     - name: Show Xcode version
       run: xcodebuild -version
 
+    - name: Install ldid
+      run: brew install ldid
+
     - name: Build Archive
       run: |
         xcodebuild archive \
           -project KernelPanel.xcodeproj \
           -scheme KernelPanel \
           -configuration Release \
+          -sdk iphoneos \
+          -arch arm64e \
           -archivePath build/KernelPanel.xcarchive \
           -destination "generic/platform=iOS" \
           CODE_SIGN_IDENTITY="" \
@@ -45,6 +50,16 @@ jobs:
       run: |
         mkdir -p build/Payload
         cp -r build/KernelPanel.xcarchive/Products/Applications/KernelPanel.app build/Payload/
+        # Sign with ldid and entitlements
+        if [ -f "KernelPanel/KernelPanel.entitlements" ]; then
+          ldid -SKernelPanel/KernelPanel.entitlements build/Payload/KernelPanel.app/KernelPanel
+        fi
+        # Sign embedded dylibs
+        for dylib in build/Payload/KernelPanel.app/Frameworks/*.dylib; do
+          if [ -f "$dylib" ]; then
+            ldid -S "$dylib"
+          fi
+        done
         cd build
         zip -r KernelPanel.ipa Payload
         rm -rf Payload

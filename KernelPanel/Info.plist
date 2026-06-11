@@ -33,6 +33,8 @@
 	<array>
 		<string>arm64</string>
 	</array>
+	<key>MinimumOSVersion</key>
+	<string>16.0</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
